@@ -37,6 +37,20 @@ EMPLOYMENT_LABELS = {
     -9: None,
 }
 
+STUDENT_STATUS_LABELS = {
+    0: "Not a student",
+    1: "Student",
+    -9: None,
+}
+
+WORKPLACE_LOC_LABELS = {
+    1: "Usually the same location (outside home)",
+    2: "Workplace regularly varies (different offices or jobsites)",
+    3: "At home (telecommute or self-employed with home office)",
+    4: "Drives for a living (e.g., bus driver, salesperson)",
+    -9: None,
+}
+
 TELECOMMUTE_DAYS_LABELS = {
     0: "0 days",
     1: "1 day",

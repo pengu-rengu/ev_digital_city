@@ -41,6 +41,9 @@ class Profile(BaseModel):
     age_group: str
     household_income: str
     employment_status: str | None
+    student_status: str | None
+    workplace_ev_charging: bool | None
+    workplace_loc: str | None
     telecommute_days: str | None
     commute_freq: str | None
     school_freq: str | None
@@ -79,31 +82,30 @@ def classify_archetype(row: NamedTuple) -> Archetype:
     
     return Archetype.FLEXIBLE_ADULT
 
-
-
 def irregular_schedule_person_ids(rows: pd.DataFrame, trip_df: pd.DataFrame) -> set[int]:
-    def hhmm_to_minutes(s: str) -> int:
+    def hhmm_to_mins(s: str) -> int:
         h, m = s.split(":")
         return int(h) * 60 + int(m)
 
     ev_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
     work_trips = ev_trips[(ev_trips["O_ACTIVITY"] == 2) | (ev_trips["D_ACTIVITY"] == 2)].copy()
-    work_trips["dep_min"] = work_trips["DEPARTURE_TIME_HHMM"].map(hhmm_to_minutes)
-    work_trips["arr_min"] = work_trips["ARRIVAL_TIME_HHMM"].map(hhmm_to_minutes)
+    work_trips["dep_time"] = work_trips["DEPARTURE_TIME_HHMM"].map(hhmm_to_mins)
+    work_trips["arr_time"] = work_trips["ARRIVAL_TIME_HHMM"].map(hhmm_to_mins)
 
-    dep_mean, dep_std = work_trips["dep_min"].mean(), work_trips["dep_min"].std()
-    arr_mean, arr_std = work_trips["arr_min"].mean(), work_trips["arr_min"].std()
+    departure_mean = work_trips["dep_time"].mean()
+    departure_std = work_trips["dep_time"].std()
 
-    dep_z = (work_trips["dep_min"] - dep_mean) / dep_std
-    arr_z = (work_trips["arr_min"] - arr_mean) / arr_std
+    arrival_mean = work_trips["arr_time"].mean()
+    arrival_std = work_trips["arr_time"].std()
 
-    flagged = work_trips[(dep_z.abs() > 2.0) | (arr_z.abs() > 2.0)]
-    return set(flagged["PERSON_ID"])
+    dep_z_score = (work_trips["dep_time"] - departure_mean) / departure_std
+    arr_z_score = (work_trips["arr_time"] - arrival_mean) / arrival_std
+
+    return set(work_trips[(dep_z_score.abs() > 2.0) | (arr_z_score.abs() > 2.0)]["PERSON_ID"])
 
 def top_bottom_miles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> tuple[set[int], set[int]]:
-    person_ids = rows["PERSON_ID"]
-    person_trips = trip_df[trip_df["PERSON_ID"].isin(person_ids)]
-    miles_per_person = person_trips.groupby("PERSON_ID", as_index = False)["DISTANCE"].sum()
+    ev_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
+    miles_per_person = ev_trips.groupby("PERSON_ID", as_index = False)["DISTANCE"].sum()
 
     top_cutoff = miles_per_person["DISTANCE"].quantile(0.75)
     bottom_cutoff = miles_per_person["DISTANCE"].quantile(0.25)
@@ -127,10 +129,10 @@ def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household
     work_arrangement: WorkArrangement | None = None
     if archetype == Archetype.WORKING_ADULT:
         days = row.J1_TELECOMMUTE_DAYS
-        if days == -9 or days == 0:
-            work_arrangement = WorkArrangement.IN_PERSON
-        elif days == 5:
+        if days == 5 or row.J1_WORKPLACE_LOC == 3:
             work_arrangement = WorkArrangement.REMOTE
+        elif days == -9 or days == 0:
+            work_arrangement = WorkArrangement.IN_PERSON
         else:
             work_arrangement = WorkArrangement.HYBRID
 
@@ -164,6 +166,9 @@ def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> list[Profile]:
             age_group = AGE_GROUP_LABELS[row.AGE_GROUP],
             household_income = INCOME_LABELS[row.HH_INCOME_DETAILED],
             employment_status = EMPLOYMENT_LABELS[row.EMPLOYMENT_STATUS],
+            student_status = STUDENT_STATUS_LABELS[row.STUDENT_STATUS],
+            workplace_ev_charging = {0: False, 1: True}.get(row.J1_BENEFITS_EV_CHARGING),
+            workplace_loc = WORKPLACE_LOC_LABELS[row.J1_WORKPLACE_LOC],
             telecommute_days = TELECOMMUTE_DAYS_LABELS[row.J1_TELECOMMUTE_DAYS],
             commute_freq = COMMUTE_FREQ_LABELS[row.J1_COMMUTE_FREQ],
             school_freq = SCHOOL_FREQ_LABELS[row.SCHOOL_FREQ],
