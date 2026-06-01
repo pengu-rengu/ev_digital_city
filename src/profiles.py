@@ -57,7 +57,6 @@ class Profile(BaseModel):
     school_type: str | None
     home_type: str | None
     home_ownership: str | None
-    day_of_week: str | None
     household_size: int
     gender: str | None
     race_ethnicity: str | None
@@ -194,7 +193,6 @@ def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.Dat
             school_type = SCHOOL_TYPE_LABELS[row.SCHOOL_TYPE],
             home_type = HOME_TYPE_LABELS[row.HOME_TYPE],
             home_ownership = HOME_OWNERSHIP_LABELS[row.HOME_OWNERSHIP],
-            day_of_week = TDATE_DOW_LABELS[row.TDATE_DOW],
             household_size = row.HHSIZE,
             gender = GENDER_LABELS[row.GENDER],
             race_ethnicity = RACEETHNICITY_LABELS[row.RACEETHNICITY],

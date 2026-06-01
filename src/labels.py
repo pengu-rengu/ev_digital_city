@@ -114,14 +114,6 @@ HOME_OWNERSHIP_LABELS = {
     -9: None,
 }
 
-TDATE_DOW_LABELS = {
-    1: "Monday",
-    2: "Tuesday",
-    3: "Wednesday",
-    4: "Thursday",
-    5: "Friday",
-}
-
 GENDER_LABELS = {
     1: "Female",
     2: "Male",
