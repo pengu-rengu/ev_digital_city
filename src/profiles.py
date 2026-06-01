@@ -27,6 +27,10 @@ class Attributes(BaseModel):
     work_arrangement: WorkArrangement | None
     schedule_irregular: bool
 
+class Vehicle(BaseModel):
+    fuel_type: str | None
+    body_type: str | None
+
 class Trip(BaseModel):
     origin_activity: str | None
     dest_activity: str | None
@@ -34,6 +38,9 @@ class Trip(BaseModel):
     distance: float
     departure_time: str
     arrival_time: str
+    vehicle: Vehicle | None
+    travelers_total: int
+    travel_mode: str | None
 
 class Profile(BaseModel):
     archetype: Archetype
@@ -48,20 +55,28 @@ class Profile(BaseModel):
     commute_freq: str | None
     school_freq: str | None
     school_type: str | None
+    home_type: str | None
+    home_ownership: str | None
+    day_of_week: str | None
+    household_size: int
+    gender: str | None
+    race_ethnicity: str | None
     trips: list[Trip]
 
-def ev_rows(person_df: pd.DataFrame, household_df: pd.DataFrame, vehicle_df: pd.DataFrame) -> pd.DataFrame:
-    ev_household_ids = vehicle_df[vehicle_df["FUELTYPE"] == 5]["HOUSEHOLD_ID"].unique()
+def vehicle_lookup(vehicle_df: pd.DataFrame) -> dict[tuple[int, int], Vehicle]:
+    lookup: dict[tuple[int, int], Vehicle] = {}
+    for row in vehicle_df.itertuples(index = False):
+        lookup[(row.HOUSEHOLD_ID, row.VEHNUM)] = Vehicle(
+            fuel_type = FUELTYPE_LABELS.get(row.FUELTYPE),
+            body_type = BODYTYPE_LABELS.get(row.BODYTYPE),
+        )
+    return lookup
 
-    ev_household_df = household_df[household_df["HOUSEHOLD_ID"].isin(ev_household_ids)]
-    ev_person_df = person_df[person_df["HOUSEHOLD_ID"].isin(ev_household_ids)]
-    
-    return pd.merge(ev_household_df, ev_person_df, on = "HOUSEHOLD_ID")
-
-def trips_for(person_id: int, trip_df: pd.DataFrame) -> list[Trip]:
+def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles: dict[tuple[int, int], Vehicle]) -> list[Trip]:
     person_trips = trip_df[trip_df["PERSON_ID"] == person_id]
     trips = []
     for row in person_trips.itertuples(index = False):
+        vehicle = vehicles.get((household_id, row.MODE_HH_VEHICLE))
         trip = Trip(
             origin_activity = ACTIVITY_LABELS[row.O_ACTIVITY],
             dest_activity = ACTIVITY_LABELS[row.D_ACTIVITY],
@@ -69,6 +84,9 @@ def trips_for(person_id: int, trip_df: pd.DataFrame) -> list[Trip]:
             distance = row.DISTANCE,
             departure_time = row.DEPARTURE_TIME_HHMM,
             arrival_time = row.ARRIVAL_TIME_HHMM,
+            vehicle = vehicle,
+            travelers_total = row.TRAVELERS_TOTAL,
+            travel_mode = TRAVEL_MODE_LABELS[row.TRAVEL_MODE],
         )
         trips.append(trip)
     return trips
@@ -87,8 +105,8 @@ def irregular_schedule_person_ids(rows: pd.DataFrame, trip_df: pd.DataFrame) -> 
         h, m = s.split(":")
         return int(h) * 60 + int(m)
 
-    ev_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
-    work_trips = ev_trips[(ev_trips["O_ACTIVITY"] == 2) | (ev_trips["D_ACTIVITY"] == 2)].copy()
+    person_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
+    work_trips = person_trips[(person_trips["O_ACTIVITY"] == 2) | (person_trips["D_ACTIVITY"] == 2)].copy()
     work_trips["dep_time"] = work_trips["DEPARTURE_TIME_HHMM"].map(hhmm_to_mins)
     work_trips["arr_time"] = work_trips["ARRIVAL_TIME_HHMM"].map(hhmm_to_mins)
 
@@ -104,8 +122,8 @@ def irregular_schedule_person_ids(rows: pd.DataFrame, trip_df: pd.DataFrame) -> 
     return set(work_trips[(dep_z_score.abs() > 2.0) | (arr_z_score.abs() > 2.0)]["PERSON_ID"])
 
 def top_bottom_miles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> tuple[set[int], set[int]]:
-    ev_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
-    miles_per_person = ev_trips.groupby("PERSON_ID", as_index = False)["DISTANCE"].sum()
+    person_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
+    miles_per_person = person_trips.groupby("PERSON_ID", as_index = False)["DISTANCE"].sum()
 
     top_cutoff = miles_per_person["DISTANCE"].quantile(0.75)
     bottom_cutoff = miles_per_person["DISTANCE"].quantile(0.25)
@@ -143,7 +161,8 @@ def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household
         schedule_irregular = schedule_irregular,
     )
 
-def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> list[Profile]:
+def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame) -> list[Profile]:
+    vehicles = vehicle_lookup(vehicle_df)
     caregiving_household_ids = set(rows[rows["AGE"] < 12]["HOUSEHOLD_ID"])
     top_miles_ids, bottom_miles_ids = top_bottom_miles(rows, trip_df)
     irregular_person_ids = irregular_schedule_person_ids(rows, trip_df)
@@ -153,7 +172,7 @@ def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> list[Profile]:
         if row.LICENSE != 1:
             continue
 
-        trips = trips_for(row.PERSON_ID, trip_df)
+        trips = trips_for(row.PERSON_ID, row.HOUSEHOLD_ID, trip_df, vehicles)
         if not trips:
             continue
         
@@ -173,6 +192,12 @@ def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> list[Profile]:
             commute_freq = COMMUTE_FREQ_LABELS[row.J1_COMMUTE_FREQ],
             school_freq = SCHOOL_FREQ_LABELS[row.SCHOOL_FREQ],
             school_type = SCHOOL_TYPE_LABELS[row.SCHOOL_TYPE],
+            home_type = HOME_TYPE_LABELS[row.HOME_TYPE],
+            home_ownership = HOME_OWNERSHIP_LABELS[row.HOME_OWNERSHIP],
+            day_of_week = TDATE_DOW_LABELS[row.TDATE_DOW],
+            household_size = row.HHSIZE,
+            gender = GENDER_LABELS[row.GENDER],
+            race_ethnicity = RACEETHNICITY_LABELS[row.RACEETHNICITY],
             trips = trips
         )
         profiles.append(profile)
@@ -186,9 +211,9 @@ if __name__ == "__main__":
     household_df = pd.read_csv("data/household.csv")
     vehicle_df = pd.read_csv("data/vehicle.csv")
     trip_df = pd.read_csv("data/trip.csv")
-    rows = ev_rows(person_df, household_df, vehicle_df)
+    rows = pd.merge(household_df, person_df, on = "HOUSEHOLD_ID")
 
-    profiles = build_profiles(rows, trip_df)
+    profiles = build_profiles(rows, trip_df, vehicle_df)
     profiles_json = [json.loads(profile.model_dump_json()) for profile in profiles]
 
     Path("artifacts").mkdir(exist_ok = True)

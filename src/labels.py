@@ -98,6 +98,86 @@ SCHOOL_TYPE_LABELS = {
     -9: None,
 }
 
+HOME_TYPE_LABELS = {
+    1: "Single-family house (detached)",
+    2: "Single-family house (attached)",
+    3: "Apartment/Condo",
+    4: "Mobile home/trailer",
+    5: "Dorm or institutional housing",
+    -9: None,
+}
+
+HOME_OWNERSHIP_LABELS = {
+    1: "Own",
+    2: "Rent",
+    3: "Other",
+    -9: None,
+}
+
+TDATE_DOW_LABELS = {
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+}
+
+GENDER_LABELS = {
+    1: "Female",
+    2: "Male",
+    -9: None,
+}
+
+RACEETHNICITY_LABELS = {
+    1: "Hispanic or Latino",
+    2: "African American or Black",
+    3: "Asian",
+    4: "White",
+    5: "Other/Two or more races",
+    -9: None,
+}
+
+TRAVEL_MODE_LABELS = {
+    1: "Walk",
+    2: "Bike",
+    3: "Motorcycle",
+    4: "Auto (driver)",
+    5: "Auto (passenger)",
+    6: "School Bus",
+    7: "Rail",
+    8: "Bus",
+    9: "Private Bus",
+    10: "Paratransit",
+    11: "Taxi / Private Car",
+    12: "Uber/Lyft/Rideshare",
+    13: "Air",
+    14: "Water",
+    15: "Other",
+}
+
+FUELTYPE_LABELS = {
+    1: "Gas",
+    2: "Diesel",
+    3: "Plug-in Hybrid",
+    4: "Hybrid",
+    5: "Electric",
+    6: "Flex Fuel",
+    997: "Other",
+    -9: None,
+}
+
+BODYTYPE_LABELS = {
+    1: "Car (or station wagon)",
+    2: "Van (any type)",
+    3: "SUV",
+    4: "Pickup Truck",
+    5: "Other type of truck",
+    6: "RV",
+    7: "Motorcycle",
+    997: "Other",
+    -9: None,
+}
+
 ACTIVITY_LABELS = {
     1: "Home",
     2: "Work",
