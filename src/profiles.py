@@ -1,4 +1,5 @@
 import pandas as pd
+from collections import Counter
 from typing import NamedTuple
 from enum import Enum
 from pydantic import BaseModel
@@ -160,14 +161,14 @@ def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household
         schedule_irregular = schedule_irregular,
     )
 
-def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame) -> list[Profile]:
+def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame) -> list[Profile]:
     vehicles = vehicle_lookup(vehicle_df)
-    caregiving_household_ids = set(rows[rows["AGE"] < 12]["HOUSEHOLD_ID"])
-    top_miles_ids, bottom_miles_ids = top_bottom_miles(rows, trip_df)
-    irregular_person_ids = irregular_schedule_person_ids(rows, trip_df)
+    caregiving_household_ids = set(df[df["AGE"] < 12]["HOUSEHOLD_ID"])
+    top_miles_ids, bottom_miles_ids = top_bottom_miles(df, trip_df)
+    irregular_person_ids = irregular_schedule_person_ids(df, trip_df)
 
     profiles = []
-    for row in rows.itertuples(index = False):
+    for row in df.itertuples(index = False):
         if row.LICENSE != 1:
             continue
 
@@ -202,15 +203,43 @@ def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.Dat
 
     return profiles
 
+def _arrival_minutes(arrival_time: str) -> int:
+    hour, minute = arrival_time.split(":")
+    return int(hour) * 60 + int(minute)
+
+EXCLUDED_FIELDS = {"archetype", "attributes", "trips"}
+
+def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
+    rows: list[dict] = []
+    for profile in profiles:
+        dict_ = profile.model_dump(mode = "json")
+        row = {key: value for key, value in dict_.items() if key not in EXCLUDED_FIELDS}
+
+        distances = [trip.distance for trip in profile.trips]
+        dest_activities = [trip.dest_activity for trip in profile.trips if trip.dest_activity is not None]
+
+        row["total_distance"] = float(sum(distances))
+        row["num_trips"] = len(profile.trips)
+        row["dominant_dest_activity"] = Counter(dest_activities).most_common(1)[0][0] if dest_activities else None
+
+        for activity in set(dest_activities):
+            mins = [_arrival_minutes(trip.arrival_time) for trip in profile.trips if trip.dest_activity == activity]
+            row[f"mean_arrival_{activity}"] = float(sum(mins) / len(mins))
+
+        row["has_ev"] = any(trip.vehicle and trip.vehicle.fuel_type == "Electric" for trip in profile.trips)
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
 if __name__ == "__main__":
 
     person_df = pd.read_csv("data/person.csv")
     household_df = pd.read_csv("data/household.csv")
     vehicle_df = pd.read_csv("data/vehicle.csv")
     trip_df = pd.read_csv("data/trip.csv")
-    rows = pd.merge(household_df, person_df, on = "HOUSEHOLD_ID")
+    merged_df = pd.merge(household_df, person_df, on = "HOUSEHOLD_ID")
 
-    profiles = build_profiles(rows, trip_df, vehicle_df)
+    profiles = build_profiles(merged_df, trip_df, vehicle_df)
     profiles_json = [json.loads(profile.model_dump_json()) for profile in profiles]
 
     Path("artifacts").mkdir(exist_ok = True)
