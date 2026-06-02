@@ -202,7 +202,6 @@ def build_profiles(rows: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.Dat
 
     return profiles
 
-
 if __name__ == "__main__":
 
     person_df = pd.read_csv("data/person.csv")
