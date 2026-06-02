@@ -61,7 +61,7 @@ if __name__ == "__main__":
     with open("artifacts/profiles.json") as file:
         profiles = [Profile.model_validate(profile_json) for profile_json in json.load(file)]
 
-    filtered = filter_profiles(profiles, 0.85, True)
+    filtered = filter_profiles(profiles, 0.5, False)
     print(f"Kept {len(filtered)} of {len(profiles)} profiles (P(EV) >= 0.85)")
 
     profiles_json = [json.loads(profile.model_dump_json()) for profile in filtered]
