@@ -42,6 +42,8 @@ class Trip(BaseModel):
     vehicle: Vehicle | None
     travelers_total: int
     travel_mode: str | None
+    origin_coords: tuple[float, float] | None
+    dest_coords: tuple[float, float] | None
 
 class Profile(BaseModel):
     archetype: Archetype
@@ -72,11 +74,20 @@ def vehicle_lookup(vehicle_df: pd.DataFrame) -> dict[tuple[int, int], Vehicle]:
         )
     return lookup
 
-def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles: dict[tuple[int, int], Vehicle]) -> list[Trip]:
+def lookup_coords(tpb_taz: int, bmc_taz: int, tpb_centroids: dict[int, tuple[float, float]], bmc_centroids: dict[int, tuple[float, float]]) -> tuple[float, float] | None:
+    if tpb_taz != -9 and tpb_taz in tpb_centroids:
+        return tpb_centroids[tpb_taz]
+    if bmc_taz != -9 and bmc_taz in bmc_centroids:
+        return bmc_centroids[bmc_taz]
+    return None
+
+def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles: dict[tuple[int, int], Vehicle], tpb_centroids: dict[int, tuple[float, float]], bmc_centroids: dict[int, tuple[float, float]]) -> list[Trip]:
     person_trips = trip_df[trip_df["PERSON_ID"] == person_id]
     trips = []
     for row in person_trips.itertuples(index = False):
         vehicle = vehicles.get((household_id, row.MODE_HH_VEHICLE))
+        origin_coords = lookup_coords(row.O_TPB_TAZ, row.O_BMC_TAZ, tpb_centroids, bmc_centroids)
+        dest_coords = lookup_coords(row.D_TPB_TAZ, row.D_BMC_TAZ, tpb_centroids, bmc_centroids)
         trip = Trip(
             origin_activity = ACTIVITY_LABELS[row.O_ACTIVITY],
             dest_activity = ACTIVITY_LABELS[row.D_ACTIVITY],
@@ -87,6 +98,8 @@ def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles
             vehicle = vehicle,
             travelers_total = row.TRAVELERS_TOTAL,
             travel_mode = TRAVEL_MODE_LABELS[row.TRAVEL_MODE],
+            origin_coords = origin_coords,
+            dest_coords = dest_coords,
         )
         trips.append(trip)
     return trips
@@ -161,7 +174,7 @@ def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household
         schedule_irregular = schedule_irregular,
     )
 
-def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame) -> list[Profile]:
+def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame, tpb_centroids: dict[int, tuple[float, float]], bmc_centroids: dict[int, tuple[float, float]]) -> list[Profile]:
     vehicles = vehicle_lookup(vehicle_df)
     caregiving_household_ids = set(df[df["AGE"] < 12]["HOUSEHOLD_ID"])
     top_miles_ids, bottom_miles_ids = top_bottom_miles(df, trip_df)
@@ -172,7 +185,7 @@ def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataF
         if row.LICENSE != 1:
             continue
 
-        trips = trips_for(row.PERSON_ID, row.HOUSEHOLD_ID, trip_df, vehicles)
+        trips = trips_for(row.PERSON_ID, row.HOUSEHOLD_ID, trip_df, vehicles, tpb_centroids, bmc_centroids)
         if not trips:
             continue
         
@@ -232,6 +245,11 @@ def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
+def load_centroids(path: str) -> dict[int, tuple[float, float]]:
+    with open(path) as file:
+        centroids_json = json.load(file)
+    return {int(taz_id): (lon, lat) for taz_id, (lon, lat) in centroids_json.items()}
+
 if __name__ == "__main__":
 
     person_df = pd.read_csv("data/person.csv")
@@ -240,7 +258,10 @@ if __name__ == "__main__":
     trip_df = pd.read_csv("data/trip.csv")
     merged_df = pd.merge(household_df, person_df, on = "HOUSEHOLD_ID")
 
-    profiles = build_profiles(merged_df, trip_df, vehicle_df)
+    tpb_centroids = load_centroids("artifacts/tpb_taz_centroids.json")
+    bmc_centroids = load_centroids("artifacts/bmc_taz_centroids.json")
+
+    profiles = build_profiles(merged_df, trip_df, vehicle_df, tpb_centroids, bmc_centroids)
     profiles_json = [json.loads(profile.model_dump_json()) for profile in profiles]
 
     Path("artifacts").mkdir(exist_ok = True)
