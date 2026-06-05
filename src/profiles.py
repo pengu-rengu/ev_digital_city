@@ -208,6 +208,7 @@ def _arrival_minutes(arrival_time: str) -> int:
     return int(hour) * 60 + int(minute)
 
 EXCLUDED_FIELDS = {"archetype", "attributes", "trips"}
+EV_FUEL_TYPES = {"Electric", "Plug-in Hybrid"}
 
 def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
     rows: list[dict] = []
@@ -226,7 +227,7 @@ def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
             mins = [_arrival_minutes(trip.arrival_time) for trip in profile.trips if trip.dest_activity == activity]
             row[f"mean_arrival_{activity}"] = float(sum(mins) / len(mins))
 
-        row["has_ev"] = any(trip.vehicle and trip.vehicle.fuel_type == "Electric" for trip in profile.trips)
+        row["has_ev"] = any(trip.vehicle and trip.vehicle.fuel_type in EV_FUEL_TYPES for trip in profile.trips)
         rows.append(row)
 
     return pd.DataFrame(rows)
