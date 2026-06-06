@@ -8,9 +8,10 @@ import json
 from pathlib import Path
 
 class Archetype(Enum):
-    STUDENT = "Student"
-    WORKING_ADULT = "Working Adult"
-    FLEXIBLE_ADULT = "Flexible Adult"
+    NON_COMMUTER = "Non-Commuter"
+    PARENT_COMMUTER = "Parent Commuter"
+    FLEXIBLE_COMMUTER = "Flexible Commuter"
+    RIGID_COMMUTER = "Rigid Commuter"
 
 class MobilityLevel(Enum):
     LOW = "Low Mobility"
@@ -104,14 +105,14 @@ def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles
         trips.append(trip)
     return trips
 
-def classify_archetype(row: NamedTuple) -> Archetype:
-    employment_status = row.EMPLOYMENT_STATUS
-    if employment_status == 0:
-        return Archetype.WORKING_ADULT
-    elif employment_status == 6 or row.STUDENT_STATUS == 1:
-        return Archetype.STUDENT
-    
-    return Archetype.FLEXIBLE_ADULT
+def classify_archetype(row: NamedTuple, trips: list[Trip]) -> Archetype:
+    if row.EMPLOYMENT_STATUS != 0 or row.J1_WORKPLACE_LOC in (3, -9):
+        return Archetype.NON_COMMUTER
+    if row.HHSIZE >= 4:
+        return Archetype.PARENT_COMMUTER
+    if sum(1 for trip in trips if trip.dest_activity not in ("Home", "Work")) >= 2:
+        return Archetype.FLEXIBLE_COMMUTER
+    return Archetype.RIGID_COMMUTER
 
 def irregular_schedule_person_ids(rows: pd.DataFrame, trip_df: pd.DataFrame) -> set[int]:
     def hhmm_to_mins(s: str) -> int:
@@ -146,7 +147,7 @@ def top_bottom_miles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> tuple[set[int
 
     return top_ids, bottom_ids
 
-def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household_ids: set[int], top_miles_ids: set[int], bottom_miles_ids: set[int], irregular_person_ids: set[int],) -> Attributes:
+def build_attributes(row: NamedTuple, caregiving_household_ids: set[int], top_miles_ids: set[int], bottom_miles_ids: set[int], irregular_person_ids: set[int],) -> Attributes:
     is_caregiver = row.HOUSEHOLD_ID in caregiving_household_ids
     schedule_irregular = row.PERSON_ID in irregular_person_ids
 
@@ -158,7 +159,7 @@ def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household
         mobility_level = MobilityLevel.MODERATE
 
     work_arrangement: WorkArrangement | None = None
-    if archetype == Archetype.WORKING_ADULT:
+    if row.EMPLOYMENT_STATUS == 0:
         days = row.J1_TELECOMMUTE_DAYS
         if days == 5 or row.J1_WORKPLACE_LOC == 3:
             work_arrangement = WorkArrangement.REMOTE
@@ -176,7 +177,7 @@ def build_attributes(row: NamedTuple, archetype: Archetype, caregiving_household
 
 def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame, tpb_centroids: dict[int, tuple[float, float]], bmc_centroids: dict[int, tuple[float, float]]) -> list[Profile]:
     vehicles = vehicle_lookup(vehicle_df)
-    caregiving_household_ids = set(df[df["AGE"] < 12]["HOUSEHOLD_ID"])
+    caregiving_household_ids = set(df[(df["AGE"] < 18) & (df["LICENSE"] != 1)]["HOUSEHOLD_ID"])
     top_miles_ids, bottom_miles_ids = top_bottom_miles(df, trip_df)
     irregular_person_ids = irregular_schedule_person_ids(df, trip_df)
 
@@ -189,8 +190,8 @@ def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataF
         if not trips:
             continue
         
-        archetype = classify_archetype(row)
-        attributes = build_attributes(row, archetype, caregiving_household_ids, top_miles_ids, bottom_miles_ids, irregular_person_ids)
+        archetype = classify_archetype(row, trips)
+        attributes = build_attributes(row, caregiving_household_ids, top_miles_ids, bottom_miles_ids, irregular_person_ids)
 
         profile = Profile(
             archetype = archetype,
@@ -242,7 +243,7 @@ def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
 
         row["has_ev"] = any(trip.vehicle and trip.vehicle.fuel_type in EV_FUEL_TYPES for trip in profile.trips)
         rows.append(row)
-
+    
     return pd.DataFrame(rows)
 
 def load_centroids(path: str) -> dict[int, tuple[float, float]]:
