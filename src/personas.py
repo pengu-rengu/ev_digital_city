@@ -1,6 +1,5 @@
 import dotenv
 import json
-import random
 from openai import OpenAI
 from pydantic import BaseModel
 from profiles import Profile, Archetype
@@ -39,6 +38,7 @@ def generate_persona(profile: Profile, client: OpenAI, prior_persona: str | None
 You will be given a Profile, which contains demographics and a list of trips taken on a single travel-diary day.
 Your task is to generate a persona of a person who could plausibly be behind this Profile.
 Do not restate the trip list. Do not produce time-stamped itineraries or hour-by-hour schedules. The trips are evidence about the person, not the persona itself.
+Do not restate age group or household income.
 
 Your persona should structured as follows:
 
@@ -57,8 +57,6 @@ Previous persona:
 
 You should try to generate a more detailed persona that better fits this specific Profile while being less generic with to other Profiles.
 """.format(prior_persona = prior_persona)
-        
-    print(system_prompt)
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
@@ -71,7 +69,6 @@ Generate one persona.""".format(profile = format_profile(profile))}
         ]
         #service_tier = "flex"
     )
-    print(response.output_text)
     return response.output_text
 
 def score_persona(profile: Profile, persona: str, client: OpenAI) -> PersonaScore:
@@ -97,20 +94,25 @@ Rate how likely this Profile matches you.""".format(profile = format_profile(pro
         ],
         text_format = PersonaScore
     )
-    print(response.output_parsed)
     return response.output_parsed
+
+def profile_similarity(profile_a: Profile, profile_b: Profile) -> int:
+    excluded = {"archetype", "attributes", "trips"}
+    return sum(
+        1 for field in Profile.model_fields
+        if field not in excluded and getattr(profile_a, field) == getattr(profile_b, field)
+    )
 
 def refine_persona(profile: Profile, profiles: list[Profile], threshold: float, client: OpenAI, max_iterations: int = 5) -> tuple[str, float]:
     peers_pool = [other for other in profiles if other.archetype == profile.archetype and other is not profile]
-    others = random.sample(peers_pool, 3)
+    others = sorted(peers_pool, key = lambda other: profile_similarity(profile, other), reverse = True)[:3]
     anchor = profile
 
     best_persona: str | None = None
     best_score: float = float("-inf")
-    prior_persona: str | None = None
 
     for iteration in range(max_iterations):
-        persona = generate_persona(anchor, client, prior_persona)
+        persona = generate_persona(anchor, client, best_persona)
         anchor_score = score_persona(anchor, persona, client).score
         other_scores = [score_persona(other, persona, client).score for other in others]
         final_score = anchor_score - sum(other_scores) / 3
@@ -122,8 +124,6 @@ def refine_persona(profile: Profile, profiles: list[Profile], threshold: float, 
 
         if final_score >= threshold:
             return persona, final_score
-
-        prior_persona = persona
 
     return best_persona, best_score
 
@@ -141,10 +141,8 @@ if __name__ == "__main__":
         profile = Profile.model_validate(profile_json)
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
-        
-
     
-    anchor = [profile for profile in profiles if profile.archetype == Archetype.RIGID_COMMUTER][1]
+    anchor = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][2]
     persona, final_score = refine_persona(
         anchor,
         profiles,
