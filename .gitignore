@@ -17,3 +17,6 @@ wheels/
 
 # Artifacts
 artifacts
+
+# Environment Variables
+.env
