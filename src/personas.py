@@ -1,8 +1,9 @@
 import dotenv
+import json
+import random
 from openai import OpenAI
 from pydantic import BaseModel
 from profiles import Profile, Archetype
-
 
 class PersonaScore(BaseModel):
     fits: str
@@ -32,11 +33,8 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, client: OpenAI) -> str:
-    response = client.responses.create(
-        model = "gpt-5.4-mini",
-        input = [
-            {"role": "system", "content": """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study.
+def generate_persona(profile: Profile, client: OpenAI, prior_persona: str | None) -> str:
+    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study.
 
 You will be given a Profile, which contains demographics and a list of trips taken on a single travel-diary day.
 Your task is to generate a persona of a person who could plausibly be behind this Profile.
@@ -48,7 +46,24 @@ Occupation and life stage: 2 sentences
 Household and social role: 2 sentences
 Values and Motivations: 3 sentences
 Typical activities and schedule: 3 sentences
-"""},
+"""
+
+    if prior_persona is not None:
+        system_prompt += """
+A previous attempt produced the following persona, which was too generic and not specific enough to the Profile.
+
+Previous persona:
+{prior_persona}
+
+You should try to generate a more detailed persona that better fits this specific Profile while being less generic with to other Profiles.
+""".format(prior_persona = prior_persona)
+        
+    print(system_prompt)
+
+    response = client.responses.create(
+        model = "gpt-5.4-mini",
+        input = [
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": """Profile:
 {profile}
 
@@ -56,6 +71,7 @@ Generate one persona.""".format(profile = format_profile(profile))}
         ]
         #service_tier = "flex"
     )
+    print(response.output_text)
     return response.output_text
 
 def score_persona(profile: Profile, persona: str, client: OpenAI) -> PersonaScore:
@@ -81,12 +97,37 @@ Rate how likely this Profile matches you.""".format(profile = format_profile(pro
         ],
         text_format = PersonaScore
     )
+    print(response.output_parsed)
     return response.output_parsed
 
+def refine_persona(profile: Profile, profiles: list[Profile], threshold: float, client: OpenAI, max_iterations: int = 5) -> tuple[str, float]:
+    peers_pool = [other for other in profiles if other.archetype == profile.archetype and other is not profile]
+    others = random.sample(peers_pool, 3)
+    anchor = profile
+
+    best_persona: str | None = None
+    best_score: float = float("-inf")
+    prior_persona: str | None = None
+
+    for iteration in range(max_iterations):
+        persona = generate_persona(anchor, client, prior_persona)
+        anchor_score = score_persona(anchor, persona, client).score
+        other_scores = [score_persona(other, persona, client).score for other in others]
+        final_score = anchor_score - sum(other_scores) / 3
+        print(f"Iteration {iteration}: anchor={anchor_score:.2f} others={other_scores} final={final_score:.2f}")
+
+        if final_score > best_score:
+            best_score = final_score
+            best_persona = persona
+
+        if final_score >= threshold:
+            return persona, final_score
+
+        prior_persona = persona
+
+    return best_persona, best_score
 
 if __name__ == "__main__":
-    import json
-
     dotenv.load_dotenv(override = True)
     client = OpenAI()
 
@@ -102,17 +143,13 @@ if __name__ == "__main__":
             profiles.append(profile)
         
 
-    for profile in profiles:
-        if profile.archetype != Archetype.FLEXIBLE_COMMUTER:
-            continue
-        print(format_profile(profile))
-        print(f"Archetype: {profile.archetype.value}")
-        print(f"Age group: {profile.age_group}, employment: {profile.employment_status}")
-        print()
-
-        persona = generate_persona(profile, client)
-        print(persona)
-        score = score_persona(profile, persona, client)
-        
-        print(score)
-        break
+    
+    anchor = [profile for profile in profiles if profile.archetype == Archetype.RIGID_COMMUTER][1]
+    persona, final_score = refine_persona(
+        anchor,
+        profiles,
+        threshold = 4.0,
+        client = client
+    )
+    print(persona)
+    print(f"Final score: {final_score:.2f}")
