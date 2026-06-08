@@ -78,7 +78,7 @@ Worst previous persona:
 {worst_persona}
 """.format(worst_persona = worst_persona)
     
-    print(system_prompt)
+    #print(system_prompt)
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
@@ -96,14 +96,14 @@ Generate one persona.""".format(profile = format_profile(profile))}
         #service_tier = "flex"
     )
     reasoning = next(item for item in response.output if item.type == "reasoning")
-    print("\n\n".join([summary.text for summary in reasoning.summary]))
-    print(response.output_text)
+    #print("\n\n".join([summary.text for summary in reasoning.summary]))
+    #print(response.output_text)
     return response.output_text
 
-def score_persona(anchor: Profile, peer: Profile, persona: str, client: OpenAI) -> int:
-    anchor_is_a = random.random() < 0.5
-    profile_a = anchor if anchor_is_a else peer
-    profile_b = peer if anchor_is_a else anchor
+def score_persona(target: Profile, peer: Profile, persona: str, client: OpenAI) -> int:
+    target_is_a = random.random() < 0.5
+    profile_a = target if target_is_a else peer
+    profile_b = peer if target_is_a else target
     first_letter = "A" if random.random() < 0.5 else "B"
     second_letter = "B" if first_letter == "A" else "A"
 
@@ -129,9 +129,9 @@ Which Profile is more likely yours?""".format(profile_a = format_profile(profile
         text_format = PersonaChoice
     )
     choice = response.output_parsed
-    print(choice)
-    anchor_chosen = (choice.choice == "A") == anchor_is_a
-    return 1 if anchor_chosen else 0
+    #print(choice)
+    target_chosen = (choice.choice == "A") == target_is_a
+    return 1 if target_chosen else 0
 
 def profile_similarity(profile_a: Profile, profile_b: Profile) -> int:
     excluded = {"archetype", "attributes", "trips"}
@@ -140,10 +140,8 @@ def profile_similarity(profile_a: Profile, profile_b: Profile) -> int:
         if field not in excluded and getattr(profile_a, field) == getattr(profile_b, field)
     )
 
-def refine_persona(profile: Profile, profiles: list[Profile], threshold: float, client: OpenAI, max_iterations: int = 5) -> tuple[str, float]:
-    peers_pool = [other for other in profiles if other.archetype == profile.archetype and other is not profile]
-    others = sorted(peers_pool, key = lambda other: profile_similarity(profile, other), reverse = True)[:3]
-    anchor = profile
+def refine_persona(target: Profile, profiles: list[Profile], threshold: float, client: OpenAI, max_iterations: int = 5, num_peers: int = 3) -> tuple[str, float]:
+    peers = sorted([other for other in profiles if other.archetype == target.archetype and other is not target], key = lambda other: profile_similarity(target, other), reverse = True)[:num_peers]
 
     best_persona: str | None = None
     best_score = float("-inf")
@@ -151,10 +149,10 @@ def refine_persona(profile: Profile, profiles: list[Profile], threshold: float, 
     worst_score = float("inf")
 
     for iteration in range(max_iterations):
-        persona = generate_persona(anchor, others, client, best_persona, worst_persona)
-        wins = sum(score_persona(anchor, other, persona, client) for other in others)
-        final_score = wins / len(others)
-        print(f"Iteration {iteration}: wins={wins}/{len(others)} final={final_score:.2f}")
+        persona = generate_persona(target, peers, client, best_persona, worst_persona)
+        wins = sum(score_persona(target, other, persona, client) for other in peers)
+        final_score = wins / len(peers)
+        print(f"Iteration {iteration}: wins={wins}/{len(peers)} final={final_score:.2f}")
 
         if final_score > best_score:
             best_score = final_score
@@ -166,7 +164,7 @@ def refine_persona(profile: Profile, profiles: list[Profile], threshold: float, 
 
         if final_score >= threshold:
             return persona, final_score
-
+    
     return best_persona, best_score
 
 if __name__ == "__main__":
@@ -184,12 +182,13 @@ if __name__ == "__main__":
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
     
-    anchor = [profile for profile in profiles if profile.archetype == Archetype.RIGID_COMMUTER][3]
+    target = [profile for profile in profiles if profile.archetype == Archetype.RIGID_COMMUTER][3]
     persona, final_score = refine_persona(
-        anchor,
+        target,
         profiles,
         threshold = 1.0,
-        client = client
+        client = client,
+        num_peers = 5
     )
     print(persona)
     print(f"Final score: {final_score:.2f}")
