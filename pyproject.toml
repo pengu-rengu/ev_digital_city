@@ -10,6 +10,7 @@ dependencies = [
     "jupyterlab>=4.5.7",
     "matplotlib>=3.10.9",
     "openai>=2.41.0",
+    "osmium>=4.3.1",
     "pandas>=3.0.3",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",

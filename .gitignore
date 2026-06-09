@@ -20,3 +20,6 @@ artifacts
 
 # Environment Variables
 .env
+
+# OSM extracts (re-downloadable from Geofabrik)
+*.osm.pbf
