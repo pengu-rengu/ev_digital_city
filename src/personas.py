@@ -11,6 +11,18 @@ class PersonaChoice(BaseModel):
     reasoning_second: str
     choice: Literal["A", "B"]
 
+class Iteration(BaseModel):
+    persona: str
+    choices: list[PersonaChoice]
+    final_score: float
+
+class PersonaArtifact(BaseModel):
+    best_persona: str
+    worst_persona: str
+    target_profile: Profile
+    peer_profiles: list[Profile]
+    iterations: list[Iteration]
+
 def format_profile(profile: Profile) -> str:
     text = f"Age Group: {profile.age_group}\n"
     if profile.household_income:
@@ -49,7 +61,7 @@ Do not exactly restate the trip list. Do not produce time-stamped itineraries or
 Do not exactly restate age group, household income, employment status, student status, or household size.
 This information is evidence about the person, not the persona itself.
 
-Be confident in your claims. Do not use words like "probably", "likely", or "suggests"
+Be confident in your claims. Do not use words like "probably", "likely", or "suggests".
 
 Your persona should structured as follows:
 
@@ -129,7 +141,6 @@ Which Profile is more likely yours?""".format(profile_a = format_profile(profile
         text_format = PersonaChoice
     )
     choice = response.output_parsed
-    #print(choice)
     target_chosen = (choice.choice == "A") == target_is_a
     return 1 if target_chosen else 0
 

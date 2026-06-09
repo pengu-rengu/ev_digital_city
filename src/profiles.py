@@ -105,12 +105,15 @@ def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles
         trips.append(trip)
     return trips
 
-def classify_archetype(row: NamedTuple, trips: list[Trip]) -> Archetype:
-    if row.EMPLOYMENT_STATUS != 0 or row.J1_WORKPLACE_LOC in (3, -9):
+def classify_archetype(trips: list[Trip], attributes: Attributes) -> Archetype:
+    has_work = any(trip.dest_activity == "Work" for trip in trips)
+    if not has_work:
         return Archetype.NON_COMMUTER
-    if row.HHSIZE >= 4:
+    has_parent_trip = any(trip.dest_activity in ("Drop off/pick up", "School") for trip in trips)
+    if attributes.is_caregiver and has_parent_trip:
         return Archetype.PARENT_COMMUTER
-    if sum(1 for trip in trips if trip.dest_activity not in ("Home", "Work")) >= 2:
+    other_count = sum(1 for trip in trips if trip.dest_activity not in ("Home", "Work"))
+    if other_count >= 2:
         return Archetype.FLEXIBLE_COMMUTER
     return Archetype.RIGID_COMMUTER
 
@@ -190,8 +193,8 @@ def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataF
         if not trips:
             continue
         
-        archetype = classify_archetype(row, trips)
         attributes = build_attributes(row, caregiving_household_ids, top_miles_ids, bottom_miles_ids, irregular_person_ids)
+        archetype = classify_archetype(trips, attributes)
 
         profile = Profile(
             archetype = archetype,
