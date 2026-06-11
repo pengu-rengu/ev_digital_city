@@ -220,7 +220,7 @@ def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataF
 
     return profiles
 
-def _arrival_minutes(arrival_time: str) -> int:
+def arrival_minutes(arrival_time: str) -> int:
     hour, minute = arrival_time.split(":")
     return int(hour) * 60 + int(minute)
 
@@ -241,7 +241,7 @@ def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
         row["dominant_dest_activity"] = Counter(dest_activities).most_common(1)[0][0] if dest_activities else None
 
         for activity in set(dest_activities):
-            mins = [_arrival_minutes(trip.arrival_time) for trip in profile.trips if trip.dest_activity == activity]
+            mins = [arrival_minutes(trip.arrival_time) for trip in profile.trips if trip.dest_activity == activity]
             row[f"mean_arrival_{activity}"] = float(sum(mins) / len(mins))
 
         row["has_ev"] = any(trip.vehicle and trip.vehicle.fuel_type in EV_FUEL_TYPES for trip in profile.trips)

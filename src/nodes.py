@@ -14,6 +14,8 @@ from shapely.geometry.base import BaseGeometry
 PBF_PATH = "data/virginia-260608.osm.pbf" # fetched from GeoFabrik (https://download.geofabrik.de/north-america/us/virginia.html)
 COUNTY_URL = "https://www2.census.gov/geo/tiger/TIGER2024/COUNTY/tl_2024_us_county.zip"
 TIGER_DIR = Path("artifacts/tiger")
+PROXIMITY_METERS = 100
+UTM_CRS = "EPSG:26918"  # NAD83 / UTM 18N
 
 def fetch_county_zip() -> Path:
     TIGER_DIR.mkdir(parents = True, exist_ok = True)
@@ -31,10 +33,6 @@ def fairfax_boundary() -> BaseGeometry:
     counties = gpd.read_file(f"zip://{fetch_county_zip()}").to_crs("EPSG:4326")
     return counties[counties["GEOID"].isin(["51059", "51600"])].geometry.union_all()
 
-class OsmNode(BaseModel):
-    category: Literal["house", "office", "supermarket", "school", "gym", "mall", "restaurant", "clinic", "doctors", "pharmacy", "fast_food", "park", "retail", "bank", "post_office", "cinema", "cafe", "bar", "pub"]
-    coords: tuple[float, float]
-
 class ChargerNode(BaseModel):
     category: Literal["charger"]
     num_l1: int
@@ -45,6 +43,11 @@ class ChargerNode(BaseModel):
     pricing: str | None
     workplace_charging: bool
     coords: tuple[float, float]
+
+class OsmNode(BaseModel):
+    category: Literal["house", "office", "supermarket", "school", "gym", "mall", "restaurant", "clinic", "doctors", "pharmacy", "fast_food", "park", "retail", "bank", "post_office", "cinema", "cafe", "bar", "pub"]
+    coords: tuple[float, float]
+    chargers: list[ChargerNode] = []
 
 def int_or_zero(value: float) -> int:
     return int(value) if pd.notna(value) else 0
@@ -125,6 +128,28 @@ def build_osm_nodes(pbf_path: str, boundary: BaseGeometry) -> list[OsmNode]:
     handler.apply_file(pbf_path, locations = True)
     return handler.nodes
 
+def attach_chargers(osm_nodes: list[OsmNode], chargers: list[ChargerNode]) -> list[ChargerNode]:
+    osm_frame = gpd.GeoDataFrame(
+        {"osm_index": range(len(osm_nodes))},
+        geometry = [Point(node.coords) for node in osm_nodes],
+        crs = "EPSG:4326"
+    ).to_crs(UTM_CRS)
+    charger_frame = gpd.GeoDataFrame(
+        {"charger_index": range(len(chargers))},
+        geometry = [Point(charger.coords) for charger in chargers],
+        crs = "EPSG:4326"
+    ).to_crs(UTM_CRS)
+    matched = gpd.sjoin_nearest(charger_frame, osm_frame, how = "left", max_distance = PROXIMITY_METERS).drop_duplicates("charger_index")
+
+    independent = []
+    for row in matched.itertuples(index = False):
+        charger = chargers[row.charger_index]
+        if pd.notna(row.osm_index):
+            osm_nodes[int(row.osm_index)].chargers.append(charger)
+        else:
+            independent.append(charger)
+    return independent
+
 def plot_nodes(boundary: BaseGeometry, nodes: list[ChargerNode | OsmNode]) -> None:
     frame = gpd.GeoDataFrame(
         {"category": [node.category for node in nodes]},
@@ -146,9 +171,11 @@ if __name__ == "__main__":
     boundary = fairfax_boundary()
     chargers = build_chargers(stations_df, boundary)
     osm_nodes = build_osm_nodes(PBF_PATH, boundary)
+    independent_chargers = attach_chargers(osm_nodes, chargers)
+    node_models = osm_nodes + independent_chargers
 
-    nodes = [json.loads(node.model_dump_json()) for node in chargers + osm_nodes]
-    plot_nodes(boundary, chargers + osm_nodes)
+    nodes = [json.loads(node.model_dump_json()) for node in node_models]
+    plot_nodes(boundary, node_models)
 
     Path("artifacts").mkdir(exist_ok = True)
     with open("artifacts/nodes.json", "w") as file:
