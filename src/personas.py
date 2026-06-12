@@ -83,7 +83,7 @@ Be confident in your claims. Do not use words like "probably", "likely", or "sug
 """
 
     if last_persona is not None:
-        system_prompt += """
+        system_prompt += f"""
 Your previous persona attempt is below, along with guidance on how to improve it. Produce a better persona that applies the guidance, keeping what worked and fixing what the guidance points out.
 
 Previous persona:
@@ -91,18 +91,20 @@ Previous persona:
 
 Guidance:
 {reflection}
-""".format(last_persona = last_persona, reflection = reflection)
+"""
+    
+    profile_str = format_profile(profile)
+    user_prompt = f"""Profile:
+{profile_str}
+
+Generate one persona from this profile."""
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
         input = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": """Profile:
-{profile}
-
-Generate one persona from this profile.""".format(profile = format_profile(profile))}
+            {"role": "user", "content": user_prompt}
         ]
-        #service_tier = "flex"
     )
     print(response.output_text, end = "\n\n\n")
     return response.output_text
@@ -112,18 +114,23 @@ def within_tolerance(guess: str, actual: str, tolerance: int = 30) -> bool:
 
 def guess_trajectory(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
     num_trips = len(target.trips)
-    response = client.responses.parse(
-        model = "gpt-5.4-mini",
-        input = [
-            {"role": "system", "content": """You are the following persona. Stay fully in character as this person.
+
+    system_prompt = f"""You are the following persona. Stay fully in character as this person.
 
 Persona:
 {persona}
 
 You took {num_trips} trips on your travel-diary day. Reconstruct them in order. For each trip, give the origin activity, destination activity, departure time (HH:MM), and arrival time (HH:MM).
 
-Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (quick-stop), Meal, Gas, Health care, Non-shopping errand, Socialize, Civic/Religious, Exercise, Recreation, Entertainment, Drop off/pick up, Other.""".format(persona = persona, num_trips = num_trips)},
-            {"role": "user", "content": "Reconstruct your {num_trips} trips.".format(num_trips = num_trips)}
+Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (quick-stop), Meal, Gas, Health care, Non-shopping errand, Socialize, Civic/Religious, Exercise, Recreation, Entertainment, Drop off/pick up, Other."""
+    
+    user_prompt = f"Reconstruct your {num_trips} trips."
+
+    response = client.responses.parse(
+        model = "gpt-5.4-mini",
+        input = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ],
         text_format = TrajectoryGuess
     )
@@ -149,15 +156,27 @@ def score_persona(target: Profile, persona: str, client: OpenAI, num_guesses: in
 
 def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenAI) -> str:
     guess_text = "\n\n".join(
-        "Trip {index}:\nDeparture Time: {departure}\nArrival Time: {arrival}\nOrigin Activity: {origin}\nDestination Activity: {dest}".format(
-            index = i + 1,
-            departure = trip.departure_time,
-            arrival = trip.arrival_time,
-            origin = trip.origin_activity,
-            dest = trip.dest_activity
-        )
+        f"Trip {i + 1}:\nDeparture Time: {trip.departure_time}\nArrival Time: {trip.arrival_time}\nOrigin Activity: {trip.origin_activity}\nDestination Activity: {trip.dest_activity}"
         for i, trip in enumerate(guess.trips)
     )
+
+    system_prompt = """You are improving a persona used in a travel-behavior study. Someone role-playing the persona tried to reconstruct the person's real trips (which activities they went to and roughly when) and produced a guess. You are given the persona, that guess, and the person's actual trips.
+
+Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and how it should make the more inferable.
+
+Do not restate or quote the actual profile or trip values. Give guidance about what the persona should convey, not the answers themselves."""
+
+    target_str = format_profile(target)
+    user_prompt = f"""Persona:
+{persona}
+
+Reconstruction guess:
+{guess_text}
+
+Actual:
+{target_str}
+
+How should the persona be improved?"""
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
@@ -166,21 +185,8 @@ def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenA
             "summary": "auto"
         },
         input = [
-            {"role": "system", "content": """You are improving a persona used in a travel-behavior study. Someone role-playing the persona tried to reconstruct the person's real trips (which activities they went to and roughly when) and produced a guess. You are given the persona, that guess, and the person's actual trips.
-
-Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and how it should make the more inferable.
-
-Do not restate or quote the actual profile or trip values. Give guidance about what the persona should convey, not the answers themselves."""},
-            {"role": "user", "content": """Persona:
-{persona}
-
-Reconstruction guess:
-{guess_text}
-
-Actual:
-{actual}
-
-How should the persona be improved?""".format(persona = persona, guess_text = guess_text, actual = format_profile(target))}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
     )
     print(response.output_text, end="\n\n\n")
