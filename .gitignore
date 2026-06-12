@@ -21,5 +21,8 @@ artifacts
 # Environment Variables
 .env
 
+# UV
+.uv-cache
+
 # OSM extracts (re-downloadable from Geofabrik)
 *.osm.pbf

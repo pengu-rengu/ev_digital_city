@@ -1,26 +1,27 @@
 import dotenv
 import json
-import random
-from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from profiles import Profile, Archetype
+from profiles import Profile, Archetype, arrival_minutes
 
-class PersonaChoice(BaseModel):
-    reasoning_first: str
-    reasoning_second: str
-    choice: Literal["A", "B"]
+class TripGuess(BaseModel):
+    origin_activity: str
+    dest_activity: str
+    departure_time: str
+    arrival_time: str
+
+class TrajectoryGuess(BaseModel):
+    reasoning: str
+    trips: list[TripGuess]
 
 class Iteration(BaseModel):
     persona: str
-    choices: list[PersonaChoice]
+    guess: TrajectoryGuess
     final_score: float
 
 class PersonaArtifact(BaseModel):
     best_persona: str
-    worst_persona: str
     target_profile: Profile
-    peer_profiles: list[Profile]
     iterations: list[Iteration]
 
 def format_profile(profile: Profile) -> str:
@@ -46,58 +47,49 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, peers: list[Profile], client: OpenAI, best_persona: str | None, worst_persona: str | None) -> str:
-    peers_block = "\n\n".join(
-        "Peer Profile {index}:\n{profile_text}".format(index = i + 1, profile_text = format_profile(peer))
-        for i, peer in enumerate(peers)
-    )
-
+def generate_persona(profile: Profile, client: OpenAI, last_persona: str | None, reflection: str | None) -> str:
     system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study.
 
 You will be given a Profile, which contains demographics and a list of trips taken on a single travel-diary day.
-You will also be given Peer Profiles: other people whose demographics look similar to the target. Your persona must plausibly fit the target Profile and clearly NOT fit the Peer Profiles. Lean on whatever distinguishes the target's trips and demographics from the peers.
+Your persona must plausibly fit the target Profile. Make the person's routine and the rhythm of their day inferable from the persona.
 
-Do not exactly restate the trip list. Do not produce time-stamped itineraries or hour-by-hour schedules. 
+DON'T:
+Do not exactly restate the trip list. Do not produce time-stamped itineraries or hour-by-hour schedules.
 Do not exactly restate age group, household income, employment status, student status, or household size.
+
+DO:
+Do provide general demographics that would help infer this person's trip schedule
+Do provide time windows (e.g. early morning, late afternoon), along with a real world explanation
+Do provide activities the person usually does, along with a real world explanation
+
+EXAMPLES:
+
+Bad: He leaves the house at 6:30 am
+Good: He gets up very early in the morning to avoid traffic
+
+Bad: She has a pick-up trip at 3:30 pm
+Good: She pick ups her kids from school in the mid-afternoon, around when school typically ends
+
+Bad: He takes a break from work and goes to a fast food restaurant around 12:30 pm
+Good: He does not like cooking at home and values convenience, especially for lunch
+
 This information is evidence about the person, not the persona itself.
-
 Be confident in your claims. Do not use words like "probably", "likely", or "suggests".
+"""
 
-Your persona should structured as follows:
-
-Occupation and life stage: 2 sentences
-Household and social role: 2 sentences
-Values and Motivations: 3 sentences
-Typical activities and schedule: 3 sentences
-
-Peer Profiles to differentiate from:
-{peers_block}
-""".format(peers_block = peers_block)
-
-    if best_persona is not None:
+    if last_persona is not None:
         system_prompt += """
-The best previous attempt is below. It fit the target better than peers but was still too generic. Improve on it, keep what differentiates, sharpen the rest.
+Your previous persona attempt is below, along with guidance on how to improve it. Produce a better persona that applies the guidance, keeping what worked and fixing what the guidance points out.
 
-Best previous persona:
-{best_persona}
-""".format(best_persona = best_persona)
+Previous persona:
+{last_persona}
 
-    if worst_persona is not None:
-        system_prompt += """
-The worst previous attempt is below. It was the least distinguishing, it fit the peers about as well as the target. Avoid its framing and generic claims.
-
-Worst previous persona:
-{worst_persona}
-""".format(worst_persona = worst_persona)
-    
-    #print(system_prompt)
+Guidance:
+{reflection}
+""".format(last_persona = last_persona, reflection = reflection)
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
-        reasoning = {
-            "effort": "medium",
-            "summary": "auto"
-        },
         input = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": """Profile:
@@ -107,18 +99,14 @@ Generate one persona.""".format(profile = format_profile(profile))}
         ]
         #service_tier = "flex"
     )
-    reasoning = next(item for item in response.output if item.type == "reasoning")
-    #print("\n\n".join([summary.text for summary in reasoning.summary]))
-    #print(response.output_text)
+    print(response.output_text, end = "\n\n\n")
     return response.output_text
 
-def score_persona(target: Profile, peer: Profile, persona: str, client: OpenAI) -> int:
-    target_is_a = random.random() < 0.5
-    profile_a = target if target_is_a else peer
-    profile_b = peer if target_is_a else target
-    first_letter = "A" if random.random() < 0.5 else "B"
-    second_letter = "B" if first_letter == "A" else "A"
+def within_tolerance(guess: str, actual: str, tolerance: int = 30) -> bool:
+    return abs(arrival_minutes(guess) - arrival_minutes(actual)) <= tolerance
 
+def score_persona(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
+    num_trips = len(target.trips)
     response = client.responses.parse(
         model = "gpt-5.4-mini",
         input = [
@@ -127,55 +115,87 @@ def score_persona(target: Profile, peer: Profile, persona: str, client: OpenAI) 
 Persona:
 {persona}
 
-You will be shown two travel-diary Profiles labelled A and B: each contains demographics and a list of trips taken on a single day. Only one of them is yours.
+You took {num_trips} trips on your travel-diary day. Reconstruct them in order. For each trip, give the origin activity, destination activity, departure time (HH:MM), and arrival time (HH:MM).
 
-First explain why Profile {first_letter} could fit you in `reasoning_first`, then explain why Profile {second_letter} could fit you in `reasoning_second` (1-2 sentences each). Then pick the letter (A or B) that is more likely to be yours.""".format(persona = persona, first_letter = first_letter, second_letter = second_letter)},
-            {"role": "user", "content": """Profile A:
-{profile_a}
-
-Profile B:
-{profile_b}
-
-Which Profile is more likely yours?""".format(profile_a = format_profile(profile_a), profile_b = format_profile(profile_b))}
+Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (quick-stop), Meal, Gas, Health care, Non-shopping errand, Socialize, Civic/Religious, Exercise, Recreation, Entertainment, Drop off/pick up, Other.""".format(persona = persona, num_trips = num_trips)},
+            {"role": "user", "content": "Reconstruct your {num_trips} trips.".format(num_trips = num_trips)}
         ],
-        text_format = PersonaChoice
+        text_format = TrajectoryGuess
     )
-    choice = response.output_parsed
-    target_chosen = (choice.choice == "A") == target_is_a
-    return 1 if target_chosen else 0
+    print(response.output_parsed, end = "\n\n\n")
+    guess = response.output_parsed
 
-def profile_similarity(profile_a: Profile, profile_b: Profile) -> int:
-    excluded = {"archetype", "attributes", "trips"}
-    return sum(
-        1 for field in Profile.model_fields
-        if field not in excluded and getattr(profile_a, field) == getattr(profile_b, field)
+    hits = 0
+    for guessed, actual in zip(guess.trips, target.trips):
+        hits += guessed.origin_activity == actual.origin_activity
+        hits += guessed.dest_activity == actual.dest_activity
+        hits += within_tolerance(guessed.departure_time, actual.departure_time)
+        hits += within_tolerance(guessed.arrival_time, actual.arrival_time)
+
+    final_score = hits / (4 * num_trips)
+    return guess, final_score
+
+def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenAI) -> str:
+    guess_text = "\n\n".join(
+        "Trip {index}:\nDeparture Time: {departure}\nArrival Time: {arrival}\nOrigin Activity: {origin}\nDestination Activity: {dest}".format(
+            index = i + 1,
+            departure = trip.departure_time,
+            arrival = trip.arrival_time,
+            origin = trip.origin_activity,
+            dest = trip.dest_activity
+        )
+        for i, trip in enumerate(guess.trips)
     )
 
-def refine_persona(target: Profile, profiles: list[Profile], threshold: float, client: OpenAI, max_iterations: int = 5, num_peers: int = 3) -> tuple[str, float]:
-    peers = sorted([other for other in profiles if other.archetype == target.archetype and other is not target], key = lambda other: profile_similarity(target, other), reverse = True)[:num_peers]
+    response = client.responses.create(
+        model = "gpt-5.4-mini",
+        reasoning = {
+            "effort": "medium",
+            "summary": "auto"
+        },
+        input = [
+            {"role": "system", "content": """You are improving a persona used in a travel-behavior study. Someone role-playing the persona tried to reconstruct the person's real trips (which activities they went to and roughly when) and produced a guess. You are given the persona, that guess, and the person's actual trips.
 
+Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and what it should make inferable instead.
+
+Do not restate or quote the actual profile or trip values. Give guidance about what the persona should convey, not the answers themselves."""},
+            {"role": "user", "content": """Persona:
+{persona}
+
+Reconstruction guess:
+{guess_text}
+
+Actual:
+{actual}
+
+How should the persona be improved?""".format(persona = persona, guess_text = guess_text, actual = format_profile(target))}
+        ]
+    )
+    print(response.output_text, end="\n\n\n")
+    return response.output_text
+
+def refine_persona(target: Profile, threshold: float, client: OpenAI, max_iterations: int = 8) -> tuple[str, float]:
     best_persona: str | None = None
     best_score = float("-inf")
-    worst_persona: str | None = None
-    worst_score = float("inf")
+    last_persona: str | None = None
+    reflection: str | None = None
 
     for iteration in range(max_iterations):
-        persona = generate_persona(target, peers, client, best_persona, worst_persona)
-        wins = sum(score_persona(target, other, persona, client) for other in peers)
-        final_score = wins / len(peers)
-        print(f"Iteration {iteration}: wins={wins}/{len(peers)} final={final_score:.2f}")
+        persona = generate_persona(target, client, last_persona, reflection)
+        guess, final_score = score_persona(target, persona, client)
+        print(f"Iteration {iteration}: final={final_score:.2f}")
 
         if final_score > best_score:
             best_score = final_score
             best_persona = persona
 
-        if final_score < worst_score:
-            worst_score = final_score
-            worst_persona = persona
-
         if final_score >= threshold:
             return persona, final_score
-    
+
+        if iteration < max_iterations - 1:
+            reflection = reflect(target, persona, guess, client)
+            last_persona = persona
+
     return best_persona, best_score
 
 if __name__ == "__main__":
@@ -193,13 +213,11 @@ if __name__ == "__main__":
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
     
-    target = [profile for profile in profiles if profile.archetype == Archetype.RIGID_COMMUTER][3]
+    target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][3]
     persona, final_score = refine_persona(
         target,
-        profiles,
         threshold = 1.0,
-        client = client,
-        num_peers = 5
+        client = client
     )
     print(persona)
     print(f"Final score: {final_score:.2f}")
