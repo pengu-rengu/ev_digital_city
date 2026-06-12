@@ -1,12 +1,15 @@
 import dotenv
 import json
+from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
 from profiles import Profile, Archetype, arrival_minutes
 
+Activity = Literal["Home", "Work", "Volunteer", "School", "Shopping", "Meal (quick-stop)", "Meal", "Gas", "Health care", "Non-shopping errand", "Socialize", "Civic/Religious", "Exercise", "Recreation", "Entertainment", "Drop off/pick up", "Other"]
+
 class TripGuess(BaseModel):
-    origin_activity: str
-    dest_activity: str
+    origin_activity: Activity
+    dest_activity: Activity
     departure_time: str
     arrival_time: str
 
@@ -16,11 +19,13 @@ class TrajectoryGuess(BaseModel):
 
 class Iteration(BaseModel):
     persona: str
-    guess: TrajectoryGuess
+    guesses: list[TrajectoryGuess]
     final_score: float
+    reflection: str | None
 
 class PersonaArtifact(BaseModel):
     best_persona: str
+    best_score: float
     target_profile: Profile
     iterations: list[Iteration]
 
@@ -95,7 +100,7 @@ Guidance:
             {"role": "user", "content": """Profile:
 {profile}
 
-Generate one persona.""".format(profile = format_profile(profile))}
+Generate one persona from this profile.""".format(profile = format_profile(profile))}
         ]
         #service_tier = "flex"
     )
@@ -105,7 +110,7 @@ Generate one persona.""".format(profile = format_profile(profile))}
 def within_tolerance(guess: str, actual: str, tolerance: int = 30) -> bool:
     return abs(arrival_minutes(guess) - arrival_minutes(actual)) <= tolerance
 
-def score_persona(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
+def guess_trajectory(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
     num_trips = len(target.trips)
     response = client.responses.parse(
         model = "gpt-5.4-mini",
@@ -132,8 +137,15 @@ Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (qui
         hits += within_tolerance(guessed.departure_time, actual.departure_time)
         hits += within_tolerance(guessed.arrival_time, actual.arrival_time)
 
-    final_score = hits / (4 * num_trips)
-    return guess, final_score
+    score = hits / (4 * num_trips)
+    return guess, score
+
+def score_persona(target: Profile, persona: str, client: OpenAI, num_guesses: int = 3) -> tuple[list[TrajectoryGuess], TrajectoryGuess, float]:
+    attempts = [guess_trajectory(target, persona, client) for _ in range(num_guesses)]
+    guesses = [guess for guess, _ in attempts]
+    final_score = sum(score for _, score in attempts) / num_guesses
+    worst_guess = min(attempts, key = lambda attempt: attempt[1])[0]
+    return guesses, worst_guess, final_score
 
 def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenAI) -> str:
     guess_text = "\n\n".join(
@@ -156,7 +168,7 @@ def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenA
         input = [
             {"role": "system", "content": """You are improving a persona used in a travel-behavior study. Someone role-playing the persona tried to reconstruct the person's real trips (which activities they went to and roughly when) and produced a guess. You are given the persona, that guess, and the person's actual trips.
 
-Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and what it should make inferable instead.
+Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and how it should make the more inferable.
 
 Do not restate or quote the actual profile or trip values. Give guidance about what the persona should convey, not the answers themselves."""},
             {"role": "user", "content": """Persona:
@@ -174,29 +186,44 @@ How should the persona be improved?""".format(persona = persona, guess_text = gu
     print(response.output_text, end="\n\n\n")
     return response.output_text
 
-def refine_persona(target: Profile, threshold: float, client: OpenAI, max_iterations: int = 8) -> tuple[str, float]:
+def refine_persona(target: Profile, client: OpenAI, threshold: float = 1.0, max_iterations: int = 5) -> PersonaArtifact:
     best_persona: str | None = None
     best_score = float("-inf")
     last_persona: str | None = None
     reflection: str | None = None
+    iterations: list[Iteration] = []
 
     for iteration in range(max_iterations):
         persona = generate_persona(target, client, last_persona, reflection)
-        guess, final_score = score_persona(target, persona, client)
+        guesses, worst_guess, final_score = score_persona(target, persona, client)
         print(f"Iteration {iteration}: final={final_score:.2f}")
 
         if final_score > best_score:
             best_score = final_score
             best_persona = persona
 
-        if final_score >= threshold:
-            return persona, final_score
-
-        if iteration < max_iterations - 1:
-            reflection = reflect(target, persona, guess, client)
+        reflection = None
+        if final_score < threshold and iteration < max_iterations - 1:
+            reflection = reflect(target, persona, worst_guess, client)
             last_persona = persona
 
-    return best_persona, best_score
+        new_iteration = Iteration(
+            persona = persona,
+            guesses = guesses,
+            final_score = final_score,
+            reflection = reflection
+        )
+        iterations.append(new_iteration)
+
+        if final_score >= threshold:
+            break
+
+    return PersonaArtifact(
+        best_persona = best_persona,
+        best_score = best_score,
+        target_profile = target,
+        iterations = iterations
+    )
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
@@ -214,10 +241,9 @@ if __name__ == "__main__":
             profiles.append(profile)
     
     target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][3]
-    persona, final_score = refine_persona(
-        target,
-        threshold = 1.0,
-        client = client
-    )
-    print(persona)
-    print(f"Final score: {final_score:.2f}")
+    artifact = refine_persona(target, client = client)
+    print(artifact.best_persona)
+    print(f"Final score: {artifact.best_score:.2f}")
+
+    with open("artifacts/personas.json", "w") as file:
+        json.dump([json.loads(artifact.model_dump_json())], file, indent = 2)
