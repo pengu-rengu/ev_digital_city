@@ -1,7 +1,8 @@
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 import osmium
+from itertools import count
 import requests
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -33,7 +34,10 @@ def reston_boundary() -> BaseGeometry:
     places = gpd.read_file(f"zip://{fetch_place_zip()}").to_crs("EPSG:4326")
     return places[places["GEOID"] == "5166672"].geometry.union_all()
 
+node_id_counter = count()
+
 class ChargerNode(BaseModel):
+    id: int = Field(default_factory = lambda: next(node_id_counter))
     category: Literal["charger"]
     num_l1: int
     num_l2: int
@@ -45,7 +49,9 @@ class ChargerNode(BaseModel):
     coords: tuple[float, float]
 
 class OsmNode(BaseModel):
+    id: int = Field(default_factory = lambda: next(node_id_counter))
     category: Literal["house", "office", "supermarket", "school", "gym", "mall", "restaurant", "clinic", "doctors", "pharmacy", "fast_food", "park", "retail", "bank", "post_office", "cinema", "cafe", "bar", "pub"]
+    metadata: dict
     coords: tuple[float, float]
     chargers: list[ChargerNode] = []
 
@@ -87,6 +93,32 @@ def build_chargers(df: pd.DataFrame, boundary: BaseGeometry) -> list[ChargerNode
         chargers.append(charger)
     return chargers
 
+SHARED_METADATA_KEYS = ["name", "addr:housenumber", "addr:street", "opening_hours", "brand", "operator", "wheelchair"]
+CATEGORY_METADATA_KEYS = {
+    "restaurant": ["cuisine"],
+    "fast_food": ["cuisine"],
+    "cafe": ["cuisine"],
+    "pub": ["cuisine"],
+    "bar": ["cuisine"],
+    "retail": ["shop"],
+    "supermarket": ["shop"],
+    "mall": ["shop"],
+    "office": ["office"],
+    "bank": ["atm"],
+    "school": ["operator:type", "grades", "religion"],
+    "doctors": ["healthcare", "healthcare:speciality"],
+    "clinic": ["healthcare", "healthcare:speciality"],
+    "pharmacy": ["healthcare", "healthcare:speciality", "dispensing"],
+    "park": ["operator:type"],
+    "gym": ["sport"]
+}
+
+def extract_metadata(category: str, tags) -> dict:
+    if category == "house":
+        return {}
+    keys = SHARED_METADATA_KEYS + CATEGORY_METADATA_KEYS.get(category, [])
+    return {key: tags[key] for key in keys if key in tags}
+
 def osm_category(tags) -> str | None:
     if tags.get("building") == "house":
         return "house"
@@ -109,7 +141,7 @@ class OsmHandler(osmium.SimpleHandler):
     def node(self, osm_node) -> None:
         category = osm_category(osm_node.tags)
         if category is not None and osm_node.location.valid() and self.prepared.contains(Point(osm_node.location.lon, osm_node.location.lat)):
-            self.nodes.append(OsmNode(category = category, coords = (osm_node.location.lon, osm_node.location.lat)))
+            self.nodes.append(OsmNode(category = category, metadata = extract_metadata(category, osm_node.tags), coords = (osm_node.location.lon, osm_node.location.lat)))
 
     def way(self, osm_way) -> None:
         category = osm_category(osm_way.tags)
@@ -121,7 +153,7 @@ class OsmHandler(osmium.SimpleHandler):
         lon = sum(point[0] for point in points) / len(points)
         lat = sum(point[1] for point in points) / len(points)
         if self.prepared.contains(Point(lon, lat)):
-            self.nodes.append(OsmNode(category = category, coords = (lon, lat)))
+            self.nodes.append(OsmNode(category = category, metadata = extract_metadata(category, osm_way.tags), coords = (lon, lat)))
 
 def build_osm_nodes(pbf_path: str, boundary: BaseGeometry) -> list[OsmNode]:
     handler = OsmHandler(boundary)

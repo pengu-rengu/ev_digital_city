@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 from pydantic import BaseModel
 from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
-from shapely.prepared import prep
 
 from nodes import reston_boundary, str_or_none
 
@@ -52,8 +51,7 @@ def fetch_speed_features(boundary: BaseGeometry) -> list[dict]:
 def speed_or_none(value: object) -> int | None:
     return int(value) if value not in (None, 0) else None
 
-def build_roads(features: list[dict], boundary: BaseGeometry) -> list[Road]:
-    prepared = prep(boundary)
+def build_roads(features: list[dict]) -> list[Road]:
     roads: list[Road] = []
     for feature in features:
         attributes = feature["attributes"]
@@ -62,8 +60,6 @@ def build_roads(features: list[dict], boundary: BaseGeometry) -> list[Road]:
             continue
         for path in geometry["paths"]:
             coords = [(point[0], point[1]) for point in path]
-            if not prepared.intersects(LineString(coords)):
-                continue
             roads.append(Road(
                 speed_limit = speed_or_none(attributes["CAR_SPEED_LIMIT"]),
                 name = str_or_none(attributes["ROUTE_COMMON_NAME"]),
@@ -91,7 +87,7 @@ def plot_roads(boundary: BaseGeometry, roads: list[Road]) -> None:
 if __name__ == "__main__":
     boundary = reston_boundary()
     features = fetch_speed_features(boundary)
-    roads = build_roads(features, boundary)
+    roads = build_roads(features)
     plot_roads(boundary, roads)
 
     Path("artifacts").mkdir(exist_ok = True)
