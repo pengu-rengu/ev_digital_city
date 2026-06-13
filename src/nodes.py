@@ -12,26 +12,26 @@ from shapely.prepared import prep
 from shapely.geometry.base import BaseGeometry
 
 PBF_PATH = "data/virginia-260608.osm.pbf" # fetched from GeoFabrik (https://download.geofabrik.de/north-america/us/virginia.html)
-COUNTY_URL = "https://www2.census.gov/geo/tiger/TIGER2024/COUNTY/tl_2024_us_county.zip"
+PLACE_URL = "https://www2.census.gov/geo/tiger/TIGER2024/PLACE/tl_2024_51_place.zip"
 TIGER_DIR = Path("artifacts/tiger")
 PROXIMITY_METERS = 100
 UTM_CRS = "EPSG:26918"  # NAD83 / UTM 18N
 
-def fetch_county_zip() -> Path:
+def fetch_place_zip() -> Path:
     TIGER_DIR.mkdir(parents = True, exist_ok = True)
-    path = TIGER_DIR / "county.zip"
+    path = TIGER_DIR / "place.zip"
     if path.exists():
         return path
-    response = requests.get(COUNTY_URL, stream = True, timeout = 120)
+    response = requests.get(PLACE_URL, stream = True, timeout = 120)
     response.raise_for_status()
     with open(path, "wb") as file:
         for chunk in response.iter_content(chunk_size = 1 << 16):
             file.write(chunk)
     return path
 
-def fairfax_boundary() -> BaseGeometry:
-    counties = gpd.read_file(f"zip://{fetch_county_zip()}").to_crs("EPSG:4326")
-    return counties[counties["GEOID"].isin(["51059", "51600"])].geometry.union_all()
+def reston_boundary() -> BaseGeometry:
+    places = gpd.read_file(f"zip://{fetch_place_zip()}").to_crs("EPSG:4326")
+    return places[places["GEOID"] == "5166672"].geometry.union_all()
 
 class ChargerNode(BaseModel):
     category: Literal["charger"]
@@ -162,13 +162,13 @@ def plot_nodes(boundary: BaseGeometry, nodes: list[ChargerNode | OsmNode]) -> No
     ax.set_aspect("equal")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title("Fairfax County nodes")
+    ax.set_title("Reston nodes")
     fig.tight_layout()
     fig.savefig("artifacts/nodes_map.png", bbox_inches = "tight")
 
 if __name__ == "__main__":
     stations_df = pd.read_csv("data/alt_fuel_stations.csv", low_memory = False)
-    boundary = fairfax_boundary()
+    boundary = reston_boundary()
     chargers = build_chargers(stations_df, boundary)
     osm_nodes = build_osm_nodes(PBF_PATH, boundary)
     independent_chargers = attach_chargers(osm_nodes, chargers)

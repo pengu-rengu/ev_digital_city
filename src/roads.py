@@ -7,12 +7,12 @@ import matplotlib.pyplot as plt
 from pydantic import BaseModel
 from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
+from shapely.prepared import prep
 
-from nodes import fairfax_boundary, str_or_none
+from nodes import reston_boundary, str_or_none
 
 SERVICE_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/ArcGIS/rest/services/VDOT_Posted_Speed_Limits/FeatureServer/0"
 PAGE_SIZE = 2000
-JURISDICTION = "Fairfax County"
 
 class Road(BaseModel):
     speed_limit: int | None
@@ -20,13 +20,19 @@ class Road(BaseModel):
     length_miles: float
     coords: list[tuple[float, float]]
 
-def fetch_speed_features() -> list[dict]:
+def fetch_speed_features(boundary: BaseGeometry) -> list[dict]:
     query_url = f"{SERVICE_URL}/query"
+    min_lon, min_lat, max_lon, max_lat = boundary.bounds
+    envelope = f"{min_lon},{min_lat},{max_lon},{max_lat}"
     features: list[dict] = []
     offset = 0
     while True:
         params = {
-            "where": f"FROM_JURISDICTION='{JURISDICTION}'",
+            "where": "1=1",
+            "geometry": envelope,
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": "4326",
+            "spatialRel": "esriSpatialRelIntersects",
             "outFields": "OBJECTID,CAR_SPEED_LIMIT,ROUTE_COMMON_NAME,LENGTH",
             "returnGeometry": "true",
             "outSR": "4326",
@@ -46,7 +52,8 @@ def fetch_speed_features() -> list[dict]:
 def speed_or_none(value: object) -> int | None:
     return int(value) if value not in (None, 0) else None
 
-def build_roads(features: list[dict]) -> list[Road]:
+def build_roads(features: list[dict], boundary: BaseGeometry) -> list[Road]:
+    prepared = prep(boundary)
     roads: list[Road] = []
     for feature in features:
         attributes = feature["attributes"]
@@ -54,11 +61,14 @@ def build_roads(features: list[dict]) -> list[Road]:
         if geometry is None:
             continue
         for path in geometry["paths"]:
+            coords = [(point[0], point[1]) for point in path]
+            if not prepared.intersects(LineString(coords)):
+                continue
             roads.append(Road(
                 speed_limit = speed_or_none(attributes["CAR_SPEED_LIMIT"]),
                 name = str_or_none(attributes["ROUTE_COMMON_NAME"]),
                 length_miles = float(attributes["LENGTH"]),
-                coords = [(point[0], point[1]) for point in path]
+                coords = coords
             ))
     return roads
 
@@ -74,14 +84,14 @@ def plot_roads(boundary: BaseGeometry, roads: list[Road]) -> None:
     ax.set_aspect("equal")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title("Fairfax County road speed limits")
+    ax.set_title("Reston road speed limits")
     fig.tight_layout()
     fig.savefig("artifacts/roads_map.png", bbox_inches = "tight")
 
 if __name__ == "__main__":
-    boundary = fairfax_boundary()
-    features = fetch_speed_features()
-    roads = build_roads(features)
+    boundary = reston_boundary()
+    features = fetch_speed_features(boundary)
+    roads = build_roads(features, boundary)
     plot_roads(boundary, roads)
 
     Path("artifacts").mkdir(exist_ok = True)
