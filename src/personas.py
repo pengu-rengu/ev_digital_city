@@ -3,7 +3,7 @@ import json
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from profiles import Profile, Archetype, arrival_minutes
+from profiles import Profile, Archetype, hhmm_to_mins
 
 Activity = Literal["Home", "Work", "Volunteer", "School", "Shopping", "Meal (quick-stop)", "Meal", "Gas", "Health care", "Non-shopping errand", "Socialize", "Civic/Religious", "Exercise", "Recreation", "Entertainment", "Drop off/pick up", "Other"]
 
@@ -110,7 +110,7 @@ Generate one persona from this profile."""
     return response.output_text
 
 def within_tolerance(guess: str, actual: str, tolerance: int = 30) -> bool:
-    return abs(arrival_minutes(guess) - arrival_minutes(actual)) <= tolerance
+    return abs(hhmm_to_mins(guess) - hhmm_to_mins(actual)) <= tolerance
 
 def guess_trajectory(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
     num_trips = len(target.trips)

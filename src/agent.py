@@ -5,9 +5,41 @@ import heapq
 import numpy as np
 from personas import PersonaArtifact
 from pydantic import BaseModel
-from profiles import Archetype, Attributes
+from profiles import Archetype, Attributes, hhmm_to_mins
 from nodes import OsmNode, ChargerNode
 from roads import Road
+
+class NodeBlock(BaseModel):
+    node_id: int
+    start_time: int
+    end_time: int
+
+class TravelBlock(BaseModel):
+    start_time: int
+    end_time: int
+
+class Schedule(BaseModel):
+    start_time: int
+    blocks: list[TravelBlock | NodeBlock]
+
+class Agent(BaseModel):
+    persona: str
+    archetype: Archetype
+    attributes: Attributes
+    schedule: Schedule
+    start_node_id: int
+
+def agent_from_persona_artifact(persona_artifact: PersonaArtifact, start_node_id: int) -> Agent:
+    return Agent(
+        persona = persona_artifact.best_persona,
+        archetype = persona_artifact.target_profile.archetype,
+        attributes = persona_artifact.target_profile.attributes,
+        schedule = Schedule(
+            start_time = 0.0,
+            blocks = []
+        ),
+        start_node_id = start_node_id
+    )
 
 def haversine_miles(origin: tuple[float, float], dest: tuple[float, float]) -> float:
     lon1, lat1 = origin
@@ -19,26 +51,20 @@ def haversine_miles(origin: tuple[float, float], dest: tuple[float, float]) -> f
     inner = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     return 3958.8 * 2 * math.asin(math.sqrt(inner))
 
-class Agent(BaseModel):
-    persona: str
-    archetype: Archetype
-    attributes: Attributes
-
-def agent_from_persona_artifact(persona_artifact: PersonaArtifact) -> Agent:
-    return Agent(
-        persona = persona_artifact.best_persona,
-        archetype = persona_artifact.target_profile.archetype,
-        attributes = persona_artifact.target_profile.attributes
-    )
+def coords_for_node_id(node_id: int, nodes: list[OsmNode | ChargerNode]) -> tuple[float, float] | None:
+    return next((node.coords for node in nodes if node.id == node_id), None)
 
 class SearchNodesTool(BaseModel):
     radius: float
     categories: list[str]
 
-    def run(self, origin: tuple[float, float], nodes: list[OsmNode | ChargerNode]) -> list[OsmNode | ChargerNode]:
+    def run(self, origin_node_id: int, nodes: list[OsmNode | ChargerNode]) -> list[OsmNode | ChargerNode]:
+        origin_coords = coords_for_node_id(origin_node_id, nodes)
+        if origin_coords is None:
+            raise ValueError(f"node id {origin_node_id} not found")
         return [
             node for node in nodes
-            if node.category in self.categories and haversine_miles(origin, node.coords) <= self.radius
+            if node.category in self.categories and haversine_miles(origin_coords, node.coords) <= self.radius
         ]
 
 class DistanceTimeToNodeTool(BaseModel):
@@ -115,12 +141,43 @@ class DistanceTimeToNodeTool(BaseModel):
                     heapq.heappush(heap, (tentative + heuristic, tentative, neighbor))
         return None
 
-    def run(self, origin: tuple[float, float], nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> tuple[float, float] | None:
-        dest_coords = next((node.coords for node in nodes if node.id == self.node_id), None)
+    def run(self, origin_node_id: int, nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> tuple[float, float] | None:
+        dest_coords = coords_for_node_id(self.node_id, nodes)
         if dest_coords is None:
-            raise ValueError(f"node_id {self.node_id} not found")
+            raise ValueError(f"node id {self.node_id} not found")
+        origin_coords = coords_for_node_id(origin_node_id, nodes)
+        if origin_coords is None:
+            raise ValueError(f"node id {origin_node_id} not found")
 
         adjacency, coords = self.build_graph(roads)
-        start = self.nearest_vertex(origin, coords)
+        start = self.nearest_vertex(origin_coords, coords)
         end = self.nearest_vertex(dest_coords, coords)
-        return self.astar(adjacency, coords, start, end)
+        result = self.astar(adjacency, coords, start, end)
+
+        if not result:
+            raise ValueError(f"Distance and time to node {self.node_id} calculation failed")
+
+        return result
+    
+class SetStartTimeTool(BaseModel):
+    start_hh_mm: str
+
+    def run(self, schedule: Schedule) -> Schedule:
+        new_schedule = schedule.model_copy(deep = True)
+        new_schedule.start_time = hhmm_to_mins(self.start_hh_mm)
+        if new_schedule.start_time > 1440 or new_schedule.start_time < 0:
+            raise ValueError(f"Invalid schedule start time: {self.start_hh_mm}")
+        
+        return new_schedule
+
+class AppendToScheduleTool(BaseModel):
+    node_id: int
+    dwell_time: int
+
+    def run(self, agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> Schedule:
+        new_schedule = agent.schedule.model_copy(deep = True)
+
+        if new_schedule.blocks:
+            pass
+        else:
+            pass

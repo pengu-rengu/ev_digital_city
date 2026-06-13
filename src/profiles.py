@@ -118,9 +118,6 @@ def classify_archetype(trips: list[Trip], attributes: Attributes) -> Archetype:
     return Archetype.RIGID_COMMUTER
 
 def irregular_schedule_person_ids(rows: pd.DataFrame, trip_df: pd.DataFrame) -> set[int]:
-    def hhmm_to_mins(s: str) -> int:
-        h, m = s.split(":")
-        return int(h) * 60 + int(m)
 
     person_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
     work_trips = person_trips[(person_trips["O_ACTIVITY"] == 2) | (person_trips["D_ACTIVITY"] == 2)].copy()
@@ -220,8 +217,8 @@ def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataF
 
     return profiles
 
-def arrival_minutes(arrival_time: str) -> int:
-    hour, minute = arrival_time.split(":")
+def hhmm_to_mins(hhmm: str) -> int:
+    hour, minute = hhmm.split(":")
     return int(hour) * 60 + int(minute)
 
 EXCLUDED_FIELDS = {"archetype", "attributes", "trips"}
@@ -241,7 +238,7 @@ def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
         row["dominant_dest_activity"] = Counter(dest_activities).most_common(1)[0][0] if dest_activities else None
 
         for activity in set(dest_activities):
-            mins = [arrival_minutes(trip.arrival_time) for trip in profile.trips if trip.dest_activity == activity]
+            mins = [hhmm_to_mins(trip.arrival_time) for trip in profile.trips if trip.dest_activity == activity]
             row[f"mean_arrival_{activity}"] = float(sum(mins) / len(mins))
 
         row["has_ev"] = any(trip.vehicle and trip.vehicle.fuel_type in EV_FUEL_TYPES for trip in profile.trips)
