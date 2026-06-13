@@ -4,3 +4,4 @@
 - Spaces between "=" in keyword arguemnts
 - No one letter variable names except for i as a loop iterator
 - No trailing commas
+- Coordinates are always (longitude, latitude)
