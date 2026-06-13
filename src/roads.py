@@ -8,15 +8,13 @@ from pydantic import BaseModel
 from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
 
-from nodes import reston_boundary, str_or_none
+from nodes import reston_boundary
 
 SERVICE_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/ArcGIS/rest/services/VDOT_Posted_Speed_Limits/FeatureServer/0"
 PAGE_SIZE = 2000
 
 class Road(BaseModel):
     speed_limit: int | None
-    name: str | None
-    length_miles: float
     coords: list[tuple[float, float]]
 
 def fetch_speed_features(boundary: BaseGeometry) -> list[dict]:
@@ -32,7 +30,7 @@ def fetch_speed_features(boundary: BaseGeometry) -> list[dict]:
             "geometryType": "esriGeometryEnvelope",
             "inSR": "4326",
             "spatialRel": "esriSpatialRelIntersects",
-            "outFields": "OBJECTID,CAR_SPEED_LIMIT,ROUTE_COMMON_NAME,LENGTH",
+            "outFields": "CAR_SPEED_LIMIT",
             "returnGeometry": "true",
             "outSR": "4326",
             "f": "json",
@@ -62,8 +60,6 @@ def build_roads(features: list[dict]) -> list[Road]:
             coords = [(point[0], point[1]) for point in path]
             roads.append(Road(
                 speed_limit = speed_or_none(attributes["CAR_SPEED_LIMIT"]),
-                name = str_or_none(attributes["ROUTE_COMMON_NAME"]),
-                length_miles = float(attributes["LENGTH"]),
                 coords = coords
             ))
     return roads

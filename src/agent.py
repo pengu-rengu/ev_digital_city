@@ -116,17 +116,7 @@ class DistanceTimeToNodeTool(BaseModel):
         return None
 
     def run(self, origin: tuple[float, float], nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> tuple[float, float] | None:
-        dest_coords = None
-        for node in nodes:
-            if node.id == self.node_id:
-                dest_coords = node.coords
-                break
-            for charger in getattr(node, "chargers", []):
-                if charger.id == self.node_id:
-                    dest_coords = charger.coords
-                    break
-            if dest_coords is not None:
-                break
+        dest_coords = next((node.coords for node in nodes if node.id == self.node_id), None)
         if dest_coords is None:
             raise ValueError(f"node_id {self.node_id} not found")
 
