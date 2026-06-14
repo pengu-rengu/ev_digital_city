@@ -14,10 +14,20 @@ from roads import Road
 from shapely.geometry import LineString, MultiPoint, Point
 from shapely.geometry.base import BaseGeometry
 
+CHARGE_DURATION: dict[str, int] = {"L1": 180, "L2": 60, "DC": 30}
+PORT_FIELD: dict[str, str] = {"L1": "num_l1", "L2": "num_l2", "DC": "num_dc_fast"}
+
+def level_ports(node: OsmNode | ChargerNode, level: str) -> int:
+    if isinstance(node, ChargerNode):
+        return getattr(node, PORT_FIELD[level])
+    return sum(getattr(charger, PORT_FIELD[level]) for charger in node.chargers)
+
 class NodeBlock(BaseModel):
     node_id: int
     start_time: int
     end_time: int
+    charge_level: Literal["L1", "L2", "DC"] | None = None
+    charge_start_time: int | None = None
 
 class TravelBlock(BaseModel):
     start_time: int
@@ -38,7 +48,11 @@ class Schedule(BaseModel):
             end = mins_to_hhmm(block.end_time)
             if isinstance(block, NodeBlock):
                 category = next(node.category for node in nodes if node.id == block.node_id)
-                text += f"{category}: {start} - {end}\n"
+                if block.charge_level:
+                    charge_end = block.charge_start_time + CHARGE_DURATION[block.charge_level]
+                    text += f"{category}: {start} - {end} (charge {block.charge_level} {mins_to_hhmm(block.charge_start_time)}-{mins_to_hhmm(charge_end)})\n"
+                else:
+                    text += f"{category}: {start} - {end}\n"
             else:
                 text += f"Travel: {start} - {end}\n"
         return text
@@ -284,6 +298,8 @@ class AppendToScheduleTool(BaseModel):
     tool: Literal["append_to_schedule"] = "append_to_schedule"
     node_id: int
     dwell_time: int
+    charge_level: Literal["L1", "L2", "DC"] | None = None
+    charge_start_hh_mm: str | None = None
 
     def run(self, agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> Schedule:
         new_schedule = agent.schedule.model_copy(deep = True)
@@ -316,11 +332,28 @@ class AppendToScheduleTool(BaseModel):
             ))
             t += home_to_node_time
         
-        new_schedule.blocks.append(NodeBlock(
-            node_id = self.node_id, 
-            start_time = t, 
+        node_block = NodeBlock(
+            node_id = self.node_id,
+            start_time = t,
             end_time = t + self.dwell_time
-        ))
+        )
+        new_schedule.blocks.append(node_block)
+
+        if self.charge_level is not None:
+            node = next(node for node in nodes if node.id == self.node_id)
+            if level_ports(node, self.charge_level) == 0:
+                raise ValueError(f"Node {self.node_id} has no {self.charge_level} ports")
+            
+            charge_start = hhmm_to_mins(self.charge_start_hh_mm)
+            charge_end = charge_start + CHARGE_DURATION[self.charge_level]
+            
+            if charge_start < node_block.start_time or charge_end > node_block.end_time:
+                raise ValueError(
+                    f"Charge {mins_to_hhmm(charge_start)}-{mins_to_hhmm(charge_end)} "
+                    f"must fit your stop {mins_to_hhmm(node_block.start_time)}-{mins_to_hhmm(node_block.end_time)}"
+                )
+            node_block.charge_level = self.charge_level
+            node_block.charge_start_time = charge_start
 
         t += self.dwell_time
         node_to_home_time = round(DistanceTimeToNodeTool(
@@ -363,11 +396,15 @@ Irregular Schedule: {agent.attributes.schedule_irregular}
 You start and end the day at your home (node id {agent.home_node_id}).
 Node categories: house, office, supermarket, school, gym, mall, restaurant, clinic, doctors, pharmacy, fast_food, park, retail, bank, post_office, cinema, cafe, bar, pub.
 
+You drive an electric vehicle and must charge exactly once during the day.
+Charge at a stop that has an attached or standalone charging station by passing charge_level (L1, L2, or DC) and charge_start_hh_mm to append_to_schedule.
+Charging takes a fixed time by level: L1 = 3 hours, L2 = 1 hour, DC = 30 minutes. The full charge window must fit inside that stop's dwell time, so make the dwell long enough.
+
 Respond with exactly ONE action per turn — never multiple. Build a realistic daily schedule:
 1. Call set_start_time first with the time (HH:MM) you leave home.
 2. Use search_nodes and distance_time_to_node to explore options from your current location.
-3. Call append_to_schedule for each stop with a dwell time in minutes; travel legs are inserted automatically.
-4. When your day is complete and you are back home, call finish."""
+3. Call append_to_schedule for each stop with a dwell time in minutes; travel legs are inserted automatically. Charge at one stop using charge_level and charge_start_hh_mm.
+4. When your day is complete, you have charged once, and you are back home, call finish."""
 
 def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Agent:
     agent.context = [
@@ -385,6 +422,9 @@ def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road
         agent.context.append({"role": "assistant", "content": response.output_text})
         action = response.output_parsed.action
         if isinstance(action, FinishTool):
+            if not any(isinstance(block, NodeBlock) and block.charge_level for block in agent.schedule.blocks):
+                agent.context.append({"role": "user", "content": "You have not charged today. Add one charging stop before finishing."})
+                continue
             break
 
         try:
@@ -422,3 +462,6 @@ if __name__ == "__main__":
 
     for message in agent.context:
         print(message, end = "\n\n")
+
+    with open("artifacts/agents.json", "w") as file:
+        json.dump([json.loads(agent.model_dump_json())], file, indent = 2)

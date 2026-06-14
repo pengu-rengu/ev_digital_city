@@ -216,22 +216,102 @@ class FakeClient:
         self.responses = FakeResponses(actions)
 
 
-def test_run_agent_drives_tools() -> None:
+def charging_office() -> tuple[OsmNode, OsmNode, list[Road]]:
     home = OsmNode(category = "house", metadata = {}, coords = (0.0, 0.0))
-    agent = Agent(
+    charger = ChargerNode(
+        category = "charger",
+        num_l1 = 0,
+        num_l2 = 2,
+        num_dc_fast = 0,
+        facility_type = None,
+        ev_network = None,
+        pricing = None,
+        workplace_charging = False,
+        coords = (0.0, 0.01)
+    )
+    office = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger])
+    roads = [Road(speed_limit = 25, coords = [(0.0, 0.0), (0.0, 0.01)])]
+    return home, office, roads
+
+
+def commuter_agent(home_node_id: int) -> Agent:
+    return Agent(
         persona = "A commuter.",
         archetype = Archetype.FLEXIBLE_COMMUTER,
         attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
         schedule = Schedule(start_time = None, blocks = []),
         context = [],
-        home_node_id = home.id
+        home_node_id = home_node_id
     )
-    client = FakeClient([SetStartTimeTool(start_hh_mm = "08:00"), FinishTool()])
 
-    result = run_agent(agent, [home], [], client)
+
+def test_run_agent_drives_tools() -> None:
+    home, office, roads = charging_office()
+    agent = commuter_agent(home.id)
+    client = FakeClient([
+        SetStartTimeTool(start_hh_mm = "08:00"),
+        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30"),
+        FinishTool()
+    ])
+
+    result = run_agent(agent, [home, office], roads, client)
 
     assert result.schedule.start_time == 480
-    assert client.responses.calls == 2
+    assert any(isinstance(block, NodeBlock) and block.charge_level == "L2" for block in result.schedule.blocks)
+    assert client.responses.calls == 3
+
+
+def test_finish_blocked_until_charge() -> None:
+    home, office, roads = charging_office()
+    agent = commuter_agent(home.id)
+    client = FakeClient([
+        SetStartTimeTool(start_hh_mm = "08:00"),
+        FinishTool(),
+        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30"),
+        FinishTool()
+    ])
+
+    result = run_agent(agent, [home, office], roads, client)
+
+    assert client.responses.calls == 4
+    assert any(message["role"] == "user" and "not charged" in message["content"] for message in result.context)
+
+
+def test_charge_append_sets_charge() -> None:
+    home, office, roads = charging_office()
+    agent = commuter_agent(home.id)
+    agent.schedule.start_time = 480
+
+    schedule = AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30").run(agent, [home, office], roads)
+
+    charged = next(block for block in schedule.blocks if isinstance(block, NodeBlock) and block.charge_level)
+    assert charged.charge_level == "L2"
+    assert charged.charge_start_time == 510
+
+
+def test_charge_window_exceeds_dwell() -> None:
+    home, office, roads = charging_office()
+    agent = commuter_agent(home.id)
+    agent.schedule.start_time = 480
+
+    try:
+        AppendToScheduleTool(node_id = office.id, dwell_time = 30, charge_level = "L2", charge_start_hh_mm = "08:05").run(agent, [home, office], roads)
+        raise AssertionError("expected ValueError")
+    except ValueError as error:
+        assert "fit your stop" in str(error)
+
+
+def test_charge_no_ports() -> None:
+    home, office, roads = charging_office()
+    office.chargers = []
+    agent = commuter_agent(home.id)
+    agent.schedule.start_time = 480
+
+    try:
+        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30").run(agent, [home, office], roads)
+        raise AssertionError("expected ValueError")
+    except ValueError as error:
+        assert "no L2 ports" in str(error)
 
 
 def test_search_caps_at_20() -> None:

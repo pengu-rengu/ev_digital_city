@@ -246,7 +246,7 @@ if __name__ == "__main__":
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
     
-    target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][3]
+    target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][0]
     artifact = refine_persona(target, client = client)
     print(artifact.best_persona)
     print(f"Final score: {artifact.best_score:.2f}")
