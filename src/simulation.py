@@ -3,7 +3,7 @@ import dotenv
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from agent import Agent, NodeBlock, Schedule, CHARGE_DURATION, level_ports
+from agent import Agent, NodeBlock, TravelBlock, Schedule, CHARGE_DURATION, level_ports
 from nodes import OsmNode, ChargerNode
 from profiles import hhmm_to_mins, mins_to_hhmm
 
@@ -17,6 +17,16 @@ class ContentionEvent(BaseModel):
     level: str
     resolution: Literal["queued", "relocated"]
     detail: str
+    reasoning: list[str]
+
+class AgentStatus(BaseModel):
+    agent_index: int
+    status: Literal["home", "traveling", "at_node", "charging"]
+    node_id: int | None
+
+class SimulationEvent(BaseModel):
+    time: int
+    statuses: list[AgentStatus]
 
 class ListChargeStopsTool(BaseModel):
     tool: Literal["list_charge_stops"] = "list_charge_stops"
@@ -123,9 +133,10 @@ def earliest_free(session: ChargeSession, sessions: list[ChargeSession], capacit
         return start
     return blockers[len(blockers) - capacity]
 
-def resolve_contention(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, max_rounds: int = 100) -> list[ContentionEvent]:
+def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, max_rounds: int = 100) -> list[ContentionEvent]:
     events = []
     prompted = {}
+    reasoning_traces = {}
     for _ in range(max_rounds):
         sessions = sessions_for(agents)
         contended = first_contention(sessions, nodes)
@@ -156,6 +167,7 @@ def resolve_contention(agents: list[Agent], nodes: list[OsmNode | ChargerNode], 
         print(response.output_text, end = "\n\n\n")
         agent.context.append({"role": "assistant", "content": response.output_text})
         action = response.output_parsed.action
+        reasoning_traces.setdefault(contended.agent_index, []).append(response.output_parsed.thought)
 
         try:
             if isinstance(action, ListChargeStopsTool):
@@ -166,8 +178,9 @@ def resolve_contention(agents: list[Agent], nodes: list[OsmNode | ChargerNode], 
                     agent_index = contended.agent_index,
                     node_id = node_id,
                     level = level,
-                    resolution = "queued", 
-                    detail = output
+                    resolution = "queued",
+                    detail = output,
+                    reasoning = reasoning_traces.pop(contended.agent_index)
                 ))
             else:
                 output = action.run(agent, contended, nodes)
@@ -176,7 +189,8 @@ def resolve_contention(agents: list[Agent], nodes: list[OsmNode | ChargerNode], 
                     node_id = action.node_id,
                     level = action.charge_level,
                     resolution = "relocated",
-                    detail = output
+                    detail = output,
+                    reasoning = reasoning_traces.pop(contended.agent_index)
                 ))
         except ValueError as error:
             output = str(error)
@@ -186,8 +200,33 @@ def resolve_contention(agents: list[Agent], nodes: list[OsmNode | ChargerNode], 
 
     raise RuntimeError(f"charger contention unresolved within {max_rounds} rounds")
 
-def simulate(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, max_rounds: int = 100) -> list[ContentionEvent]:
-    return resolve_contention(agents, nodes, client, max_rounds)
+def agent_status(agent: Agent, time: int) -> tuple[str, int | None]:
+    for block in agent.schedule.blocks:
+        if block.start_time <= time < block.end_time:
+            if isinstance(block, NodeBlock):
+                if block.charge_level and block.charge_start_time <= time < block.charge_start_time + CHARGE_DURATION[block.charge_level]:
+                    return "charging", block.node_id
+                return "at_node", block.node_id
+            return "traveling", None
+    return "home", agent.home_node_id
+
+def build_simulation_events(agents: list[Agent]) -> list[SimulationEvent]:
+    starts = [block.start_time for agent in agents for block in agent.schedule.blocks]
+    ends = [block.end_time for agent in agents for block in agent.schedule.blocks]
+    events = []
+    for time in range(min(starts), max(ends) + 1, 3):
+        statuses = [
+            AgentStatus(agent_index = index, status = status, node_id = node_id)
+            for index, agent in enumerate(agents)
+            for status, node_id in [agent_status(agent, time)]
+        ]
+        events.append(SimulationEvent(time = time, statuses = statuses))
+    return events
+
+def simulate(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, max_rounds: int = 100) -> dict:
+    contention_events = resolve_contentions(agents, nodes, client, max_rounds)
+    simulation_events = build_simulation_events(agents)
+    return {"contention_events": contention_events, "simulation_events": simulation_events}
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
@@ -200,29 +239,44 @@ if __name__ == "__main__":
 
     real_agent = agents[0]
     gym_node_id = 312
+    office_node_id = 255
+    bank_node_id = 315
     mock_a = Agent(
-        persona = "Mock driver already charging at the gym.",
+        persona = "Mock driver: gym before work.",
         archetype = real_agent.archetype,
         attributes = real_agent.attributes,
-        schedule = Schedule(start_time = 340, blocks = [NodeBlock(node_id = gym_node_id, start_time = 340, end_time = 410, charge_level = "L2", charge_start_time = 346)]),
+        schedule = Schedule(start_time = 340, blocks = [
+            TravelBlock(start_time = 340, end_time = 345),
+            NodeBlock(node_id = gym_node_id, start_time = 345, end_time = 410, charge_level = "L2", charge_start_time = 346),
+            TravelBlock(start_time = 410, end_time = 425),
+            NodeBlock(node_id = office_node_id, start_time = 425, end_time = 1010),
+            TravelBlock(start_time = 1010, end_time = 1030)
+        ]),
         context = [],
         home_node_id = real_agent.home_node_id
     )
     mock_b = Agent(
-        persona = "Mock driver already charging at the gym.",
+        persona = "Mock driver: errand then gym then work.",
         archetype = real_agent.archetype,
         attributes = real_agent.attributes,
-        schedule = Schedule(start_time = 340, blocks = [NodeBlock(node_id = gym_node_id, start_time = 340, end_time = 470, charge_level = "L2", charge_start_time = 400)]),
+        schedule = Schedule(start_time = 340, blocks = [
+            TravelBlock(start_time = 340, end_time = 350),
+            NodeBlock(node_id = bank_node_id, start_time = 350, end_time = 392),
+            TravelBlock(start_time = 392, end_time = 397),
+            NodeBlock(node_id = gym_node_id, start_time = 397, end_time = 470, charge_level = "L2", charge_start_time = 400),
+            TravelBlock(start_time = 470, end_time = 485),
+            NodeBlock(node_id = office_node_id, start_time = 485, end_time = 1005),
+            TravelBlock(start_time = 1005, end_time = 1025)
+        ]),
         context = [],
         home_node_id = real_agent.home_node_id
     )
 
     contending_agents = [real_agent, mock_a, mock_b]
-    events = simulate(contending_agents, nodes, client)
+    result = simulate(contending_agents, nodes, client)
 
-    for event in events:
-        print(event)
-    print()
-    for agent in contending_agents:
-        print(agent.schedule.format(nodes))
-        print(agent.context)
+    with open("artifacts/simulation_logs.json", "w") as file:
+        json.dump({
+            "contention_events": [event.model_dump() for event in result["contention_events"]],
+            "simulation_events": [event.model_dump() for event in result["simulation_events"]]
+        }, file, indent = 2)

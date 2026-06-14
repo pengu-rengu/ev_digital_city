@@ -3,10 +3,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent import Agent, NodeBlock, Schedule
+from agent import Agent, NodeBlock, Schedule, TravelBlock
 from nodes import ChargerNode, OsmNode
 from profiles import Archetype, Attributes, MobilityLevel
-from simulation import ChargeResolution, ListChargeStopsTool, ReadjustChargeTool, WaitInQueueTool, first_contention, sessions_for, simulate
+from simulation import ChargeResolution, ListChargeStopsTool, ReadjustChargeTool, WaitInQueueTool, build_simulation_events, first_contention, sessions_for, simulate
 
 
 def charger_node(coords: tuple[float, float], num_l2: int) -> ChargerNode:
@@ -82,10 +82,11 @@ def test_queue_resolution_shifts_start() -> None:
     late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510)])
     client = FakeClient([WaitInQueueTool()])
 
-    events = simulate([early, late], [node], client)
+    events = simulate([early, late], [node], client)["contention_events"]
 
     assert len(events) == 1
     assert events[0].resolution == "queued"
+    assert len(events[0].reasoning) == 1
     assert late.schedule.blocks[0].charge_start_time == 540
 
 
@@ -99,10 +100,11 @@ def test_queue_no_fit_relocates() -> None:
     ])
     client = FakeClient([WaitInQueueTool(), ReadjustChargeTool(node_id = other.id, charge_level = "L2", charge_start_hh_mm = "10:30")])
 
-    events = simulate([early, late], [node, other], client)
+    events = simulate([early, late], [node, other], client)["contention_events"]
 
     assert len(events) == 1
     assert events[0].resolution == "relocated"
+    assert len(events[0].reasoning) == 2
     assert late.schedule.blocks[0].charge_level is None
     assert late.schedule.blocks[1].charge_level == "L2"
     assert late.schedule.blocks[1].charge_start_time == 630
@@ -118,9 +120,27 @@ def test_list_charge_stops_then_relocate() -> None:
     ])
     client = FakeClient([ListChargeStopsTool(), ReadjustChargeTool(node_id = other.id, charge_level = "L2", charge_start_hh_mm = "10:30")])
 
-    events = simulate([early, late], [node, other], client)
+    events = simulate([early, late], [node, other], client)["contention_events"]
 
     assert len(events) == 1
     assert events[0].resolution == "relocated"
+    assert len(events[0].reasoning) == 2
     assert any(f"Node ID: {other.id}" in message["content"] for message in late.context if message["role"] == "user")
     assert sum(1 for message in late.context if "Charger contention:" in message["content"]) == 1
+
+
+def test_build_simulation_events() -> None:
+    node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 1)])
+    agent = charging_agent(99, [
+        TravelBlock(start_time = 480, end_time = 486),
+        NodeBlock(node_id = node.id, start_time = 486, end_time = 660, charge_level = "L2", charge_start_time = 540)
+    ])
+
+    events = build_simulation_events([agent])
+    status_at = {event.time: event.statuses[0].status for event in events}
+
+    assert status_at[480] == "traveling"
+    assert status_at[486] == "at_node"
+    assert status_at[540] == "charging"
+    assert status_at[600] == "at_node"
+    assert status_at[660] == "home"
