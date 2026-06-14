@@ -221,6 +221,10 @@ def hhmm_to_mins(hhmm: str) -> int:
     hour, minute = hhmm.split(":")
     return int(hour) * 60 + int(minute)
 
+def mins_to_hhmm(mins: float) -> str:
+    total = int(round(mins))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
 EXCLUDED_FIELDS = {"archetype", "attributes", "trips"}
 EV_FUEL_TYPES = {"Electric", "Plug-in Hybrid"}
 

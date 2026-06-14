@@ -3,9 +3,10 @@ import json
 import math
 import heapq
 import numpy as np
+import openai
 from personas import PersonaArtifact
 from pydantic import BaseModel
-from profiles import Archetype, Attributes, hhmm_to_mins
+from profiles import Archetype, Attributes, hhmm_to_mins, mins_to_hhmm
 from nodes import OsmNode, ChargerNode
 from roads import Road
 from shapely.geometry import LineString, MultiPoint, Point
@@ -21,14 +22,31 @@ class TravelBlock(BaseModel):
     end_time: int
 
 class Schedule(BaseModel):
-    start_time: int
+    start_time: int | None
     blocks: list[TravelBlock | NodeBlock]
+
+    def format(self, nodes: list[OsmNode | ChargerNode]) -> str:
+        text = ""
+        if self.start_time is None:
+            text += "Start Time: no start time\n"
+        else:
+            text += f"Start Time: {mins_to_hhmm(self.start_time)}\n"
+        for block in self.blocks:
+            start = mins_to_hhmm(block.start_time)
+            end = mins_to_hhmm(block.end_time)
+            if isinstance(block, NodeBlock):
+                category = next(node.category for node in nodes if node.id == block.node_id)
+                text += f"{category}: {start} - {end}\n"
+            else:
+                text += f"Travel: {start} - {end}\n"
+        return text
 
 class Agent(BaseModel):
     persona: str
     archetype: Archetype
     attributes: Attributes
     schedule: Schedule
+    context: list[dict]
     home_node_id: int
 
 def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int) -> Agent:
@@ -37,7 +55,7 @@ def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id:
         archetype = persona_artifact.target_profile.archetype,
         attributes = persona_artifact.target_profile.attributes,
         schedule = Schedule(
-            start_time = 0.0,
+            start_time = None,
             blocks = []
         ),
         home_node_id = home_node_id
@@ -68,6 +86,42 @@ class SearchNodesTool(BaseModel):
             node for node in nodes
             if node.category in self.categories and haversine_miles(origin_coords, node.coords) <= self.radius
         ]
+
+    @staticmethod
+    def format_charger(charger: ChargerNode) -> str:
+        text = ""
+        if charger.num_l1:
+            text += f"  Level 1 Ports: {charger.num_l1}\n"
+        if charger.num_l2:
+            text += f"  Level 2 Ports: {charger.num_l2}\n"
+        if charger.num_dc_fast:
+            text += f"  DC Fast Ports: {charger.num_dc_fast}\n"
+        if charger.ev_network:
+            text += f"  Network: {charger.ev_network}\n"
+        if charger.pricing:
+            text += f"  Pricing: {charger.pricing}\n"
+        if charger.workplace_charging:
+            text += "  Workplace Charging: yes\n"
+        return text
+
+    @staticmethod
+    def format_result(nodes: list[OsmNode | ChargerNode]) -> str:
+        text = ""
+        for node in nodes:
+            text += f"Node ID: {node.id}\n"
+            text += f"Category: {node.category}\n"
+            if isinstance(node, ChargerNode):
+                text += SearchNodesTool.format_charger(node)
+            else:
+                name = node.metadata.get("name")
+                if name:
+                    text += f"Name: {name}\n"
+                for charger in node.chargers:
+                    text += "Charging Station:\n"
+                    text += SearchNodesTool.format_charger(charger)
+            text += "\n"
+        return text
+
 
 class DistanceTimeToNodeTool(BaseModel):
     node_id: int
@@ -198,12 +252,20 @@ class DistanceTimeToNodeTool(BaseModel):
             raise ValueError(f"Distance and time to node {self.node_id} calculation failed")
 
         return result
+
+    def format_result(self, dist_time_result: tuple[float, float]) -> str:
+        dist, minutes = dist_time_result
+        return f"Distance: {dist:.1f} miles\nTravel Time: {mins_to_hhmm(minutes)}\n"
     
 class SetStartTimeTool(BaseModel):
     start_hh_mm: str
 
     def run(self, schedule: Schedule) -> Schedule:
         new_schedule = schedule.model_copy(deep = True)
+
+        if new_schedule.start_time:
+            raise ValueError("Schedule already has start time")
+
         new_schedule.start_time = hhmm_to_mins(self.start_hh_mm)
         if new_schedule.start_time > 1440 or new_schedule.start_time < 0:
             raise ValueError(f"Invalid schedule start time: {self.start_hh_mm}")
@@ -217,6 +279,9 @@ class AppendToScheduleTool(BaseModel):
     def run(self, agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> Schedule:
         new_schedule = agent.schedule.model_copy(deep = True)
 
+        if not new_schedule.start_time:
+            raise ValueError(f"Schedule must have start time. Use set_start_time tool")
+
         if new_schedule.blocks:
             
             t = new_schedule.blocks.pop().start_time
@@ -224,7 +289,10 @@ class AppendToScheduleTool(BaseModel):
                 node_id = self.node_id
             ).run(new_schedule.blocks[-1].node_id, nodes, roads)[1]
 
-            new_schedule.blocks.append(TravelBlock(t, t + node_to_node_time))
+            new_schedule.blocks.append(TravelBlock(
+                start_time = t,
+                end_time = t + node_to_node_time
+            ))
             t += node_to_node_time
         else:
             t = new_schedule.start_time
@@ -248,7 +316,33 @@ class AppendToScheduleTool(BaseModel):
         t += self.dwell_time
         node_to_home_time = DistanceTimeToNodeTool(agent.home_node_id).run(self.node_id, nodes, roads)[1]
 
-        new_schedule.blocks.append(TravelBlock(t, t + node_to_home_time))
+        new_schedule.blocks.append(TravelBlock(
+            start_time = t,
+            end_time = t + node_to_home_time
+        ))
 
         return new_schedule
-            
+
+TOOLS = [
+    openai.pydantic_function_tool(
+        SearchNodesTool,
+        name = "search_nodes",
+        description = "Find nodes (places, charging stations) of given categories within a radius (miles) of an origin node."
+    ),
+    openai.pydantic_function_tool(
+        DistanceTimeToNodeTool,
+        name = "distance_time_to_node",
+        description = "Road-network distance (miles) and travel time to a destination node from an origin node."
+    ),
+    openai.pydantic_function_tool(
+        SetStartTimeTool,
+        name = "set_start_time",
+        description = "Set the schedule start time (HH:MM). Must be called before appending blocks."
+    ),
+    openai.pydantic_function_tool(
+        AppendToScheduleTool,
+        name = "append_to_schedule",
+        description = "Append a visit to a node with a dwell time (minutes); inserts travel legs automatically."
+    )
+]
+

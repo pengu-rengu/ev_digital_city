@@ -5,7 +5,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent import DistanceTimeToNodeTool
+from agent import DistanceTimeToNodeTool, NodeBlock, Schedule, SearchNodesTool, TravelBlock
+from nodes import ChargerNode, OsmNode
 from roads import Road
 
 
@@ -127,3 +128,65 @@ def test_overlapping_roads_do_not_crash() -> None:
     adjacency, coords = DistanceTimeToNodeTool(node_id = 1).build_graph(roads)
 
     assert len(adjacency) == len(coords)
+
+
+def test_format_shows_attached_and_standalone_chargers() -> None:
+    attached = ChargerNode(
+        category = "charger",
+        num_l1 = 0,
+        num_l2 = 4,
+        num_dc_fast = 2,
+        facility_type = None,
+        ev_network = "ChargePoint",
+        pricing = "$0.30/kWh",
+        workplace_charging = False,
+        coords = (0.0, 0.0)
+    )
+    store = OsmNode(category = "supermarket", metadata = {"name": "Whole Foods"}, coords = (0.0, 0.0), chargers = [attached])
+    standalone = ChargerNode(
+        category = "charger",
+        num_l1 = 1,
+        num_l2 = 0,
+        num_dc_fast = 0,
+        facility_type = None,
+        ev_network = None,
+        pricing = None,
+        workplace_charging = True,
+        coords = (0.1, 0.1)
+    )
+
+    text = SearchNodesTool.format_result([store, standalone])
+
+    assert f"Node ID: {store.id}" in text
+    assert "Category: supermarket" in text
+    assert "Name: Whole Foods" in text
+    assert "Charging Station:" in text
+    assert "Level 2 Ports: 4" in text
+    assert "Network: ChargePoint" in text
+    assert f"Node ID: {standalone.id}" in text
+    assert "Level 1 Ports: 1" in text
+    assert "Workplace Charging: yes" in text
+
+
+def test_format_result_distance_time() -> None:
+    text = DistanceTimeToNodeTool(node_id = 1).format_result((3.25, 12.0))
+
+    assert "3.2 miles" in text
+    assert "00:12" in text
+
+
+def test_schedule_format() -> None:
+    gym = OsmNode(category = "gym", metadata = {}, coords = (0.0, 0.0))
+    schedule = Schedule(
+        start_time = 480,
+        blocks = [
+            TravelBlock(start_time = 480, end_time = 495),
+            NodeBlock(node_id = gym.id, start_time = 495, end_time = 525)
+        ]
+    )
+
+    text = schedule.format([gym])
+
+    assert "Start Time: 08:00" in text
+    assert "Travel: 08:00 - 08:15" in text
+    assert "gym: 08:15 - 08:45" in text
