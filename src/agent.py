@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from profiles import Archetype, Attributes, hhmm_to_mins
 from nodes import OsmNode, ChargerNode
 from roads import Road
+from shapely.geometry import LineString, MultiPoint, Point
+from shapely.geometry.base import BaseGeometry
 
 class NodeBlock(BaseModel):
     node_id: int
@@ -27,9 +29,9 @@ class Agent(BaseModel):
     archetype: Archetype
     attributes: Attributes
     schedule: Schedule
-    start_node_id: int
+    home_node_id: int
 
-def agent_from_persona_artifact(persona_artifact: PersonaArtifact, start_node_id: int) -> Agent:
+def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int) -> Agent:
     return Agent(
         persona = persona_artifact.best_persona,
         archetype = persona_artifact.target_profile.archetype,
@@ -38,7 +40,7 @@ def agent_from_persona_artifact(persona_artifact: PersonaArtifact, start_node_id
             start_time = 0.0,
             blocks = []
         ),
-        start_node_id = start_node_id
+        home_node_id = home_node_id
     )
 
 def haversine_miles(origin: tuple[float, float], dest: tuple[float, float]) -> float:
@@ -70,6 +72,35 @@ class SearchNodesTool(BaseModel):
 class DistanceTimeToNodeTool(BaseModel):
     node_id: int
 
+    def point_intersections(self, geometry: BaseGeometry) -> list[Point]:
+        if geometry.is_empty:
+            return []
+        if isinstance(geometry, Point):
+            return [geometry]
+        if isinstance(geometry, MultiPoint):
+            return list(geometry.geoms)
+        return []
+
+    def augmented_road_coords(self, roads: list[Road]) -> list[list[tuple[float, float]]]:
+        lines = [LineString(road.coords) for road in roads]
+        extra_coords_by_road = [set() for _ in roads]
+
+        for first_index in range(len(roads)):
+            for second_index in range(first_index + 1, len(roads)):
+                intersection = lines[first_index].intersection(lines[second_index])
+                for point in self.point_intersections(intersection):
+                    coord = (point.x, point.y)
+                    extra_coords_by_road[first_index].add(coord)
+                    extra_coords_by_road[second_index].add(coord)
+
+        return [
+            sorted(
+                set(road.coords) | extra_coords_by_road[road_index],
+                key = lambda coord: lines[road_index].project(Point(coord))
+            )
+            for road_index, road in enumerate(roads)
+        ]
+
     def nearest_vertex(self, coord: tuple[float, float], coords: np.ndarray, exclude: frozenset = frozenset()) -> int | None:
         distances = [math.inf if index in exclude else haversine_miles(coord, (point[0], point[1])) for index, point in enumerate(coords)]
         nearest = int(np.argmin(distances))
@@ -78,35 +109,42 @@ class DistanceTimeToNodeTool(BaseModel):
     def build_graph(self, roads: list[Road]) -> tuple[list[list[tuple[int, float, float]]], np.ndarray]:
         vertex_ids = {}
         vertex_coords = []
-        vertex_speed = []
+        vertex_road_speeds = []
         adjacency = []
+        road_coords_by_road = self.augmented_road_coords(roads)
 
-        for road in roads:
+        for road, road_coords in zip(roads, road_coords_by_road):
+            road_speed = float(road.speed_limit)
             previous = None
-            for coord in road.coords:
+            road_vertex_ids = set()
+            for coord in road_coords:
                 key = (coord[0], coord[1])
                 if key not in vertex_ids:
                     vertex_ids[key] = len(vertex_coords)
                     vertex_coords.append(key)
-                    vertex_speed.append(road.speed_limit)
+                    vertex_road_speeds.append([])
                     adjacency.append([])
                 current = vertex_ids[key]
+                road_vertex_ids.add(current)
                 if previous is not None and previous != current:
                     miles = haversine_miles(vertex_coords[previous], vertex_coords[current])
-                    adjacency[previous].append((current, miles, road.speed_limit))
-                    adjacency[current].append((previous, miles, road.speed_limit))
+                    adjacency[previous].append((current, miles, road_speed))
+                    adjacency[current].append((previous, miles, road_speed))
                 previous = current
+            for vertex_id in road_vertex_ids:
+                vertex_road_speeds[vertex_id].append(road_speed)
 
         coords = np.array(vertex_coords)
-        for road in roads:
-            ids = frozenset(vertex_ids[(coord[0], coord[1])] for coord in road.coords)
-            endpoints = {vertex_ids[(road.coords[0][0], road.coords[0][1])], vertex_ids[(road.coords[-1][0], road.coords[-1][1])]}
+        for road, road_coords in zip(roads, road_coords_by_road):
+            ids = frozenset(vertex_ids[(coord[0], coord[1])] for coord in road_coords)
+            endpoints = {vertex_ids[(road_coords[0][0], road_coords[0][1])], vertex_ids[(road_coords[-1][0], road_coords[-1][1])]}
             for endpoint in endpoints:
                 target = self.nearest_vertex(vertex_coords[endpoint], coords, exclude = ids)
                 if target is None:
                     continue
                 miles = haversine_miles(vertex_coords[endpoint], vertex_coords[target])
-                speed = vertex_speed[target]
+                target_speed = sum(vertex_road_speeds[target]) / len(vertex_road_speeds[target])
+                speed = (float(road.speed_limit) + target_speed) / 2
                 adjacency[endpoint].append((target, miles, speed))
                 adjacency[target].append((endpoint, miles, speed))
         return adjacency, coords
@@ -129,7 +167,9 @@ class DistanceTimeToNodeTool(BaseModel):
                     previous, miles, speed = predecessor[cursor]
                     minutes += miles / speed * 60
                     cursor = previous
+                
                 return distance, minutes
+            
             for neighbor, miles, speed in adjacency[node]:
                 if neighbor in visited:
                     continue
@@ -178,6 +218,37 @@ class AppendToScheduleTool(BaseModel):
         new_schedule = agent.schedule.model_copy(deep = True)
 
         if new_schedule.blocks:
-            pass
+            
+            t = new_schedule.blocks.pop().start_time
+            node_to_node_time = DistanceTimeToNodeTool(
+                node_id = self.node_id
+            ).run(new_schedule.blocks[-1].node_id, nodes, roads)[1]
+
+            new_schedule.blocks.append(TravelBlock(t, t + node_to_node_time))
+            t += node_to_node_time
         else:
-            pass
+            t = new_schedule.start_time
+            home_to_node_time = DistanceTimeToNodeTool(
+                node_id = self.node_id
+            ).run(agent.home_node_id, nodes, roads)[1]
+
+            
+            new_schedule.blocks.append(TravelBlock(
+                start_time = t, 
+                end_time = t + home_to_node_time
+            ))
+            t += home_to_node_time
+        
+        new_schedule.blocks.append(NodeBlock(
+            node_id = self.node_id, 
+            start_time = t, 
+            end_time = t + self.dwell_time
+        ))
+
+        t += self.dwell_time
+        node_to_home_time = DistanceTimeToNodeTool(agent.home_node_id).run(self.node_id, nodes, roads)[1]
+
+        new_schedule.blocks.append(TravelBlock(t, t + node_to_home_time))
+
+        return new_schedule
+            

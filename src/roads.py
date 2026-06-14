@@ -14,7 +14,7 @@ SERVICE_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/ArcGIS/rest/services
 PAGE_SIZE = 2000
 
 class Road(BaseModel):
-    speed_limit: int | None
+    speed_limit: int
     coords: list[tuple[float, float]]
 
 def fetch_speed_features(boundary: BaseGeometry) -> list[dict]:
@@ -46,9 +46,6 @@ def fetch_speed_features(boundary: BaseGeometry) -> list[dict]:
         offset += PAGE_SIZE
     return features
 
-def speed_or_none(value: object) -> int | None:
-    return int(value) if value not in (None, 0) else None
-
 def build_roads(features: list[dict]) -> list[Road]:
     roads: list[Road] = []
     for feature in features:
@@ -56,10 +53,13 @@ def build_roads(features: list[dict]) -> list[Road]:
         geometry = feature.get("geometry")
         if geometry is None:
             continue
+        speed_limit = attributes["CAR_SPEED_LIMIT"]
+        if speed_limit is None:
+            raise ValueError("road missing speed limit")
         for path in geometry["paths"]:
             coords = [(point[0], point[1]) for point in path]
             roads.append(Road(
-                speed_limit = speed_or_none(attributes["CAR_SPEED_LIMIT"]),
+                speed_limit = int(speed_limit),
                 coords = coords
             ))
     return roads

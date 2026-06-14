@@ -5,3 +5,5 @@
 - No one letter variable names except for i as a loop iterator
 - No trailing commas
 - Coordinates are always (longitude, latitude)
+- Put tests in the `/tests` folder
+- Include code snippets in implementation plans when requested
