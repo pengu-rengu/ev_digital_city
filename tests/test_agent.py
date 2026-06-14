@@ -5,8 +5,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent import DistanceTimeToNodeTool, NodeBlock, Schedule, SearchNodesTool, TravelBlock
+from agent import Agent, AgentAction, AppendToScheduleTool, DistanceTimeToNodeTool, FinishTool, NodeBlock, Schedule, SearchNodesTool, SetStartTimeTool, TravelBlock, run_agent
 from nodes import ChargerNode, OsmNode
+from profiles import Archetype, Attributes, MobilityLevel
 from roads import Road
 
 
@@ -190,3 +191,75 @@ def test_schedule_format() -> None:
     assert "Start Time: 08:00" in text
     assert "Travel: 08:00 - 08:15" in text
     assert "gym: 08:15 - 08:45" in text
+
+
+class FakeParsed:
+    def __init__(self, action: object) -> None:
+        self.output = []
+        self.output_text = ""
+        self.output_parsed = AgentAction(thought = "", action = action)
+
+
+class FakeResponses:
+    def __init__(self, actions: list[object]) -> None:
+        self.actions = actions
+        self.calls = 0
+
+    def parse(self, model: str, input: list[dict], text_format: type) -> FakeParsed:
+        action = self.actions[self.calls]
+        self.calls += 1
+        return FakeParsed(action)
+
+
+class FakeClient:
+    def __init__(self, actions: list[object]) -> None:
+        self.responses = FakeResponses(actions)
+
+
+def test_run_agent_drives_tools() -> None:
+    home = OsmNode(category = "house", metadata = {}, coords = (0.0, 0.0))
+    agent = Agent(
+        persona = "A commuter.",
+        archetype = Archetype.FLEXIBLE_COMMUTER,
+        attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
+        schedule = Schedule(start_time = None, blocks = []),
+        context = [],
+        home_node_id = home.id
+    )
+    client = FakeClient([SetStartTimeTool(start_hh_mm = "08:00"), FinishTool()])
+
+    result = run_agent(agent, [home], [], client)
+
+    assert result.schedule.start_time == 480
+    assert client.responses.calls == 2
+
+
+def test_search_caps_at_20() -> None:
+    origin = OsmNode(category = "house", metadata = {}, coords = (0.0, 0.0))
+    offices = [OsmNode(category = "office", metadata = {}, coords = (0.0, 0.0001 * (index + 1))) for index in range(30)]
+    nodes = [origin] + offices
+
+    found = SearchNodesTool(radius = 10, categories = ["office"]).run(origin.id, nodes)
+
+    assert len(found) == 20
+    assert all(node.category == "office" for node in found)
+
+
+def test_append_rounds_travel_times() -> None:
+    home = OsmNode(category = "house", metadata = {}, coords = (0.0, 0.0))
+    dest = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01))
+    roads = [Road(speed_limit = 25, coords = [(0.0, 0.0), (0.0, 0.01)])]
+    agent = Agent(
+        persona = "A commuter.",
+        archetype = Archetype.FLEXIBLE_COMMUTER,
+        attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
+        schedule = Schedule(start_time = 480, blocks = []),
+        context = [],
+        home_node_id = home.id
+    )
+
+    schedule = AppendToScheduleTool(node_id = dest.id, dwell_time = 10).run(agent, [home, dest], roads)
+
+    for block in schedule.blocks:
+        assert isinstance(block.start_time, int)
+        assert isinstance(block.end_time, int)

@@ -2,8 +2,10 @@ import dotenv
 import json
 import math
 import heapq
+import random
 import numpy as np
-import openai
+from typing import Literal
+from openai import OpenAI
 from personas import PersonaArtifact
 from pydantic import BaseModel
 from profiles import Archetype, Attributes, hhmm_to_mins, mins_to_hhmm
@@ -58,7 +60,8 @@ def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id:
             start_time = None,
             blocks = []
         ),
-        home_node_id = home_node_id
+        home_node_id = home_node_id,
+        context = []
     )
 
 def haversine_miles(origin: tuple[float, float], dest: tuple[float, float]) -> float:
@@ -75,6 +78,7 @@ def coords_for_node_id(node_id: int, nodes: list[OsmNode | ChargerNode]) -> tupl
     return next((node.coords for node in nodes if node.id == node_id), None)
 
 class SearchNodesTool(BaseModel):
+    tool: Literal["search_nodes"] = "search_nodes"
     radius: float
     categories: list[str]
 
@@ -82,10 +86,12 @@ class SearchNodesTool(BaseModel):
         origin_coords = coords_for_node_id(origin_node_id, nodes)
         if origin_coords is None:
             raise ValueError(f"node id {origin_node_id} not found")
-        return [
+        matches = [
             node for node in nodes
             if node.category in self.categories and haversine_miles(origin_coords, node.coords) <= self.radius
         ]
+        random.shuffle(matches)
+        return matches[:20]
 
     @staticmethod
     def format_charger(charger: ChargerNode) -> str:
@@ -124,6 +130,7 @@ class SearchNodesTool(BaseModel):
 
 
 class DistanceTimeToNodeTool(BaseModel):
+    tool: Literal["distance_time_to_node"] = "distance_time_to_node"
     node_id: int
 
     def point_intersections(self, geometry: BaseGeometry) -> list[Point]:
@@ -258,6 +265,7 @@ class DistanceTimeToNodeTool(BaseModel):
         return f"Distance: {dist:.1f} miles\nTravel Time: {mins_to_hhmm(minutes)}\n"
     
 class SetStartTimeTool(BaseModel):
+    tool: Literal["set_start_time"] = "set_start_time"
     start_hh_mm: str
 
     def run(self, schedule: Schedule) -> Schedule:
@@ -267,12 +275,13 @@ class SetStartTimeTool(BaseModel):
             raise ValueError("Schedule already has start time")
 
         new_schedule.start_time = hhmm_to_mins(self.start_hh_mm)
-        if new_schedule.start_time > 1440 or new_schedule.start_time < 0:
+        if new_schedule.start_time > 1440 or new_schedule.start_time <= 0:
             raise ValueError(f"Invalid schedule start time: {self.start_hh_mm}")
         
         return new_schedule
 
 class AppendToScheduleTool(BaseModel):
+    tool: Literal["append_to_schedule"] = "append_to_schedule"
     node_id: int
     dwell_time: int
 
@@ -285,9 +294,9 @@ class AppendToScheduleTool(BaseModel):
         if new_schedule.blocks:
             
             t = new_schedule.blocks.pop().start_time
-            node_to_node_time = DistanceTimeToNodeTool(
+            node_to_node_time = round(DistanceTimeToNodeTool(
                 node_id = self.node_id
-            ).run(new_schedule.blocks[-1].node_id, nodes, roads)[1]
+            ).run(new_schedule.blocks[-1].node_id, nodes, roads)[1])
 
             new_schedule.blocks.append(TravelBlock(
                 start_time = t,
@@ -296,9 +305,9 @@ class AppendToScheduleTool(BaseModel):
             t += node_to_node_time
         else:
             t = new_schedule.start_time
-            home_to_node_time = DistanceTimeToNodeTool(
+            home_to_node_time = round(DistanceTimeToNodeTool(
                 node_id = self.node_id
-            ).run(agent.home_node_id, nodes, roads)[1]
+            ).run(agent.home_node_id, nodes, roads)[1])
 
             
             new_schedule.blocks.append(TravelBlock(
@@ -314,7 +323,9 @@ class AppendToScheduleTool(BaseModel):
         ))
 
         t += self.dwell_time
-        node_to_home_time = DistanceTimeToNodeTool(agent.home_node_id).run(self.node_id, nodes, roads)[1]
+        node_to_home_time = round(DistanceTimeToNodeTool(
+            node_id = agent.home_node_id
+        ).run(self.node_id, nodes, roads)[1])
 
         new_schedule.blocks.append(TravelBlock(
             start_time = t,
@@ -323,26 +334,91 @@ class AppendToScheduleTool(BaseModel):
 
         return new_schedule
 
-TOOLS = [
-    openai.pydantic_function_tool(
-        SearchNodesTool,
-        name = "search_nodes",
-        description = "Find nodes (places, charging stations) of given categories within a radius (miles) of an origin node."
-    ),
-    openai.pydantic_function_tool(
-        DistanceTimeToNodeTool,
-        name = "distance_time_to_node",
-        description = "Road-network distance (miles) and travel time to a destination node from an origin node."
-    ),
-    openai.pydantic_function_tool(
-        SetStartTimeTool,
-        name = "set_start_time",
-        description = "Set the schedule start time (HH:MM). Must be called before appending blocks."
-    ),
-    openai.pydantic_function_tool(
-        AppendToScheduleTool,
-        name = "append_to_schedule",
-        description = "Append a visit to a node with a dwell time (minutes); inserts travel legs automatically."
-    )
-]
+class FinishTool(BaseModel):
+    tool: Literal["finish"] = "finish"
 
+class AgentAction(BaseModel):
+    thought: str
+    action: SearchNodesTool | DistanceTimeToNodeTool | SetStartTimeTool | AppendToScheduleTool | FinishTool
+
+def current_node_id(agent: Agent) -> int:
+    for block in reversed(agent.schedule.blocks):
+        if isinstance(block, NodeBlock):
+            return block.node_id
+    return agent.home_node_id
+
+def build_system_prompt(agent: Agent) -> str:
+    work_arrangement = agent.attributes.work_arrangement.value if agent.attributes.work_arrangement else "Unknown"
+    return f"""You are role-playing as the following person, planning where you go on one typical day.
+
+Persona:
+{agent.persona}
+
+Archetype: {agent.archetype.value}
+Caregiver: {agent.attributes.is_caregiver}
+Mobility: {agent.attributes.mobility_level.value}
+Work Arrangement: {work_arrangement}
+Irregular Schedule: {agent.attributes.schedule_irregular}
+
+You start and end the day at your home (node id {agent.home_node_id}).
+Node categories: house, office, supermarket, school, gym, mall, restaurant, clinic, doctors, pharmacy, fast_food, park, retail, bank, post_office, cinema, cafe, bar, pub.
+
+Respond with exactly ONE action per turn — never multiple. Build a realistic daily schedule:
+1. Call set_start_time first with the time (HH:MM) you leave home.
+2. Use search_nodes and distance_time_to_node to explore options from your current location.
+3. Call append_to_schedule for each stop with a dwell time in minutes; travel legs are inserted automatically.
+4. When your day is complete and you are back home, call finish."""
+
+def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Agent:
+    agent.context = [
+        {"role": "system", "content": build_system_prompt(agent)},
+        {"role": "user", "content": "Plan your full day."}
+    ]
+
+    for _ in range(max_turns):
+        response = client.responses.parse(
+            model = "gpt-5.4-mini",
+            input = agent.context,
+            text_format = AgentAction
+        )
+        print(response.output_text, end = "\n\n\n")
+        agent.context.append({"role": "assistant", "content": response.output_text})
+        action = response.output_parsed.action
+        if isinstance(action, FinishTool):
+            break
+
+        try:
+            if isinstance(action, SearchNodesTool):
+                output = SearchNodesTool.format_result(action.run(current_node_id(agent), nodes))
+            elif isinstance(action, DistanceTimeToNodeTool):
+                output = action.format_result(action.run(current_node_id(agent), nodes, roads))
+            elif isinstance(action, SetStartTimeTool):
+                agent.schedule = action.run(agent.schedule)
+                output = agent.schedule.format(nodes)
+            else:
+                agent.schedule = action.run(agent, nodes, roads)
+                output = agent.schedule.format(nodes)
+        except ValueError as error:
+            output = str(error)
+
+        print(output)
+        agent.context.append({"role": "user", "content": output})
+
+    return agent
+
+if __name__ == "__main__":
+    dotenv.load_dotenv(override = True)
+    client = OpenAI()
+
+    with open("artifacts/personas.json") as file:
+        artifact = PersonaArtifact.model_validate(json.load(file)[0])
+    with open("artifacts/nodes.json") as file:
+        nodes = [ChargerNode.model_validate(node) if node["category"] == "charger" else OsmNode.model_validate(node) for node in json.load(file)]
+    with open("artifacts/roads.json") as file:
+        roads = [Road.model_validate(road) for road in json.load(file)]
+
+    home_node_id = next(node.id for node in nodes if node.category == "house")
+    agent = run_agent(agent_from_persona_artifact(artifact, home_node_id), nodes, roads, client)
+
+    for message in agent.context:
+        print(message, end = "\n\n")
