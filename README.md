@@ -107,7 +107,7 @@ uv run src/filter_profiles.py # -> filtered_profiles.json (needed by the noteboo
 ## Running the notebooks
 
 The analysis/validation notebooks read the artifacts above (`filter_profiles.py` must have been run
-for the ones that use `filtered_profiles.json`). Start Jupyter and open them from the URL it prints:
+for the ones that use `filtered_profiles.json`). Start Jupyter and paste the URL it prints into VS Code Jupyter Kernel selection.
 
 ```bash
 uv run jupyter lab
