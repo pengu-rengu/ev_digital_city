@@ -294,6 +294,15 @@ class SetStartTimeTool(BaseModel):
         
         return new_schedule
 
+class ResetScheduleTool(BaseModel):
+    tool: Literal["reset_schedule"] = "reset_schedule"
+
+    def run(self, schedule: Schedule) -> Schedule:
+        new_schedule = schedule.model_copy(deep = True)
+        new_schedule.start_time = None
+        new_schedule.blocks = []
+        return new_schedule
+
 class AppendToScheduleTool(BaseModel):
     tool: Literal["append_to_schedule"] = "append_to_schedule"
     node_id: int
@@ -346,7 +355,7 @@ class AppendToScheduleTool(BaseModel):
             
             charge_start = hhmm_to_mins(self.charge_start_hh_mm)
             charge_end = charge_start + CHARGE_DURATION[self.charge_level]
-            
+
             if charge_start < node_block.start_time or charge_end > node_block.end_time:
                 raise ValueError(
                     f"Charge {mins_to_hhmm(charge_start)}-{mins_to_hhmm(charge_end)} "
@@ -372,7 +381,7 @@ class FinishTool(BaseModel):
 
 class AgentAction(BaseModel):
     thought: str
-    action: SearchNodesTool | DistanceTimeToNodeTool | SetStartTimeTool | AppendToScheduleTool | FinishTool
+    action: SearchNodesTool | DistanceTimeToNodeTool | SetStartTimeTool | AppendToScheduleTool | ResetScheduleTool | FinishTool
 
 def current_node_id(agent: Agent) -> int:
     for block in reversed(agent.schedule.blocks):
@@ -382,7 +391,7 @@ def current_node_id(agent: Agent) -> int:
 
 def build_system_prompt(agent: Agent) -> str:
     work_arrangement = agent.attributes.work_arrangement.value if agent.attributes.work_arrangement else "Unknown"
-    return f"""You are role-playing as the following person, planning where you go on one typical day.
+    return f"""You are role-playing as the following person, planning where you go on a typical day.
 
 Persona:
 {agent.persona}
@@ -404,7 +413,9 @@ Respond with exactly ONE action per turn — never multiple. Build a realistic d
 1. Call set_start_time first with the time (HH:MM) you leave home.
 2. Use search_nodes and distance_time_to_node to explore options from your current location.
 3. Call append_to_schedule for each stop with a dwell time in minutes; travel legs are inserted automatically. Charge at one stop using charge_level and charge_start_hh_mm.
-4. When your day is complete, you have charged once, and you are back home, call finish."""
+4. When your day is complete, you have charged once, and you are back home, call finish.
+
+If you make a mistake, call reset_schedule to clear your schedule and start over from set_start_time."""
 
 def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Agent:
     agent.context = [
@@ -432,7 +443,7 @@ def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road
                 output = SearchNodesTool.format_result(action.run(current_node_id(agent), nodes))
             elif isinstance(action, DistanceTimeToNodeTool):
                 output = action.format_result(action.run(current_node_id(agent), nodes, roads))
-            elif isinstance(action, SetStartTimeTool):
+            elif isinstance(action, (SetStartTimeTool, ResetScheduleTool)):
                 agent.schedule = action.run(agent.schedule)
                 output = agent.schedule.format(nodes)
             else:

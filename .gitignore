@@ -24,5 +24,8 @@ artifacts
 # UV
 .uv-cache
 
+# Scripts
+scripts
+
 # OSM extracts (re-downloadable from Geofabrik)
 *.osm.pbf

@@ -15,7 +15,7 @@ class ContentionEvent(BaseModel):
     agent_index: int
     node_id: int
     level: str
-    resolution: Literal["queued", "relocated"]
+    resolution: Literal["queued", "relocated", "gave_up"]
     detail: str
     reasoning: list[str]
 
@@ -79,6 +79,10 @@ class ReadjustChargeTool(BaseModel):
         new_start = hhmm_to_mins(self.charge_start_hh_mm)
         new_end = new_start + CHARGE_DURATION[self.charge_level]
 
+        original_start = session.block.charge_start_time
+        if new_start < original_start:
+            raise ValueError(f"Readjusted charge must start at or after your original window {mins_to_hhmm(original_start)}; cannot move earlier")
+
         if new_start < target.start_time or new_end > target.end_time:
             raise ValueError(f"Charge {mins_to_hhmm(new_start)}-{mins_to_hhmm(new_end)} must fit your stop {mins_to_hhmm(target.start_time)}-{mins_to_hhmm(target.end_time)}")
 
@@ -88,9 +92,19 @@ class ReadjustChargeTool(BaseModel):
         target.charge_start_time = new_start
         return f"Charge moved to node {self.node_id} at {mins_to_hhmm(new_start)}."
 
+class GiveUpTool(BaseModel):
+    tool: Literal["give_up"] = "give_up"
+
+    def run(self, session: ChargeSession) -> str:
+        node_id = session.block.node_id
+        level = session.block.charge_level
+        session.block.charge_level = None
+        session.block.charge_start_time = None
+        return f"You give up charging; dropped {level} charge at node {node_id}."
+
 class ChargeResolution(BaseModel):
     thought: str
-    action: ListChargeStopsTool | WaitInQueueTool | ReadjustChargeTool
+    action: ListChargeStopsTool | WaitInQueueTool | ReadjustChargeTool | GiveUpTool
 
 def session_end(block: NodeBlock) -> int:
     return block.charge_start_time + CHARGE_DURATION[block.charge_level]
@@ -155,7 +169,8 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
                     f"Charger contention: all {level} ports at node {node_id} are taken during your charge window "
                     f"{mins_to_hhmm(charge_start)}-{mins_to_hhmm(charge_end)}. "
                     "Wait in queue (delay your charge start until a port frees; it must still finish before you leave the stop), "
-                    "or use list_charge_stops to see which of your stops have a charger, then readjust your charge to one of them."
+                    "or use list_charge_stops to see which of your stops have a charger, then readjust your charge to one of them, "
+                    "or give up charging at this stop if neither works."
                 )
             })
             prompted[contended.agent_index] = (node_id, level, charge_start)
@@ -182,13 +197,23 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
                     detail = output,
                     reasoning = reasoning_traces.pop(contended.agent_index)
                 ))
-            else:
+            elif isinstance(action, ReadjustChargeTool):
                 output = action.run(agent, contended, nodes)
                 events.append(ContentionEvent(
                     agent_index = contended.agent_index,
                     node_id = action.node_id,
                     level = action.charge_level,
                     resolution = "relocated",
+                    detail = output,
+                    reasoning = reasoning_traces.pop(contended.agent_index)
+                ))
+            else:
+                output = action.run(contended)
+                events.append(ContentionEvent(
+                    agent_index = contended.agent_index,
+                    node_id = node_id,
+                    level = level,
+                    resolution = "gave_up",
                     detail = output,
                     reasoning = reasoning_traces.pop(contended.agent_index)
                 ))
