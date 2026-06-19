@@ -19,6 +19,7 @@ class ScenarioRanking(BaseModel):
 
 class PersonaCandidate(BaseModel):
     persona: str
+    charging_disposition: str
     actions: list[ScenarioResponse]
     score: int
 
@@ -61,51 +62,66 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, client: OpenAI) -> str:
-    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day. Your persona must plausibly fit the Profile and make the person's routine, day-to-day variation, and EV charging habits inferable.
+def generate_persona(profile: Profile, client: OpenAI, charging_disposition: str) -> str:
+    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day, along with a charging disposition: a short description of the person's general attitude toward charging their EV away from home. Your persona must plausibly fit the Profile and the charging disposition, and make the person's routine, day-to-day variation, and EV charging habits inferable.
 
 DON'T:
-- Restate the trip list, time-stamped itineraries, or hour-by-hour schedules.
-- Restate age group, household income, employment status, student status, or household size verbatim.
-- Lock the person into one fixed daily schedule — the trip list is one day out of many.
-- Assume home charging: this person has NO home charging and charges only away from home.
-- State exact kWh, exact battery percentages at exact times, or a fixed charging schedule.
-- Hedge. Do not use "probably", "likely", or "suggests"; state tendencies as fact.
+- Do not restate the trip list, time-stamped itineraries, or hour-by-hour schedules.
+- Do not restate age group, household income, employment status, student status, or household size word for word.
+- Do not use the broad activity categories in the trip list, such as Work, Meal, or Shopping.
+- Do not lock the person into one fixed daily schedule; the trip list is one day out of many.
+- Do not assume home charging: this person has no home charging and only charges away from home.
+- Do not state exact kWh, exact battery percentages at exact times, or a fixed charging schedule.
+- Do not use "probably", "likely", or "suggests". State tendencies as a fact.
 
 DO:
-- Give general demographics that help infer the person's trip schedule.
-- Give time windows (early morning, late afternoon) and usual activities, each with a real-world reason.
-- Separate firm anchors (work start, school pickup) from loose discretionary activities (gym, errands, meals).
-- Give frequencies, tendencies, and conditional day-to-day variation, not single occurrences.
-- Give preferences and trade-offs so the person's choices can be inferred in new situations.
-- Convey their away-from-home EV charging: where they plug in (a dedicated stop vs topping up while already stopped), how low they let the battery get, fast DC vs slower top-up, how they react to a busy charger (wait, relocate, or skip), and price sensitivity.
+- Do give general demographics that help infer the person's trip schedule.
+- Do give time windows, such as early morning or late afternoon, and usual activities, each with a real-world reason.
+- Do go into detail for the activities instead of leaving them as broad categories
+- Do separate anchor activities, such as work, or school pickup from loose discretionary activities, such as gym, errands, meals.
+- Do give frequencies, tendencies, and conditional day-to-day variation, not single occurrences.
+- Do describe activities across weeks or months instead of being locked in to one day.
+- Do give preferences and trade-offs so the person's choices can be inferred in new situations.
+- Do convey away-from-home EV charging behavior: where they plug in, how low they let the battery get, fast DC vs slower port, how they react to a busy charger, and price sensitivity.
 
 EXAMPLES:
 
 Bad: He leaves the house at 6:30 am
-Good: He gets up very early in the morning to avoid traffic
+Good: He gets up very early in the morning to avoid traffic, except on days where he works remote
 
 Bad: She has a pick-up trip at 3:30 pm
-Good: She picks up her kids from school in the mid-afternoon, around when school typically ends
+Good: She usually picks up her kids from a nearby elementary school in the mid-afternoon, around when school typically ends. Every Wednesday, however, she instead pick ups her kids from soccer practice in the early evening.
 
 Bad: He takes a break from work and goes to a fast food restaurant around 12:30 pm
-Good: He does not like cooking at home and values convenience, especially for lunch
+Good: He does not like cooking at home and values convenience, especially for lunch, although he is still willing to cook for special occasions.
 
-Bad: Some weeks he skips the gym on Tuesday
-Good: Some weeks he skips the gym when work runs long
+Bad: Some days he skips the gym
+Good: Some days he skips the lifing weights when work runs long
+
+Bad: She goes to the gym in the morning
+Good: She goes swimming at the gym's indoor pool in the morning during the weekdays. However, occasionally the pool is closed, in which case she stays at home.
 
 Bad: He charges to 80% at 2:15 pm
 Good: He tops up while already stopped for an errand and avoids letting the battery get too low
 
 Bad: She charges every day right after work
 Good: On long-driving days she seeks out a fast charger; most days she charges while running errands
+
+Bad: He eats a meal for dinner after shopping
+Good: He brings his family to the grocery store every Saturday, and afterwards they eat dinner at a Chinese restaurant.
+
+Bad: He goes to a healthcare location in the evening
+Good: He picks up his medicine from the pharmacy on the first of every month
 """
 
     profile_str = format_profile(profile)
     user_prompt = f"""Profile:
 {profile_str}
 
-Generate one persona from this profile."""
+Disposition:
+{charging_disposition}
+
+Generate one persona from this profile and disposition"""
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
@@ -116,6 +132,12 @@ Generate one persona from this profile."""
     )
     print(response.output_text, end = "\n\n\n")
     return response.output_text
+
+CHARGING_DISPOSITIONS = [
+    "Cost-minimizer. Tolerates a low battery, hunts for the cheapest charge, is content with slow AC while parked, and rarely pays a DC fast-charge premium. Defers or skips charging on expensive or busy days.",
+    "Convenience-first. Charges early while plenty of range remains, pays for DC fast charging to stay on schedule, and will not wait in a queue or detour to save money.",
+    "Range-anxious planner. Tops up well before the battery gets low, plans charging stops ahead of the day, and prioritizes never getting stranded over both cost and convenience."
+]
 
 CHARGING_SCENARIOS = [
     "All the chargers at the stop where you planned to charge are busy when you arrive. Do you wait for one to free up, drive to a different stop to charge, or skip charging today?",
@@ -154,11 +176,11 @@ def rank_personas(profile: Profile, scenario: str, responses: list[ScenarioRespo
         model = "gpt-5.4-mini",
         reasoning = {"effort": "high"},
         input = [
-            {"role": "system", "content": """You are an EV charging behavior expert. Several people each describe how they would handle the same charging situation. Rank them from most to least realistic for the actual person described in the profile.
+            {"role": "system", "content": """You are an EV charging behavior expert. Several people each describe how they would handle the same charging situation. Rank them from most to least realistic for the actual person described in the Profile.
 
-Assume NO home charging exists in this study — nobody can charge at home. Treat any action or reasoning that relies on, assumes, or falls back to home charging as unrealistic.
+Assume no one has access to home charging. Treat any action or reasoning that relies on, assumes, or falls back to home charging as unrealistic.
 
-From the person's demographics, trips, and charging access (workplace EV charging when stated), reason through what a real person like this would most plausibly do away from home. Penalize ignoring charger availability/contention, level-vs-time mismatches (expecting a full charge in a short stop), economically irrational choices, and any reliance on home charging.
+From the person's demographics, trips, and charging access, reason through what a real person like this would most plausibly do away from home. Penalize ignoring charger availability/contention, level-vs-time mismatches (expecting a full charge in a short stop), economically irrational choices, and any reliance on home charging.
 
 Give your reasoning and the ranking as a list of person numbers from most to least realistic (e.g. [2, 1, 3]). Include every person exactly once."""},
             {"role": "user", "content": f"""Profile:
@@ -175,8 +197,9 @@ Rank the people."""}
     print(result.output_parsed, end = "\n\n\n")
     return result.output_parsed
 
-def generate_best_persona(target: Profile, client: OpenAI, n_samples: int = 3) -> PersonaArtifact:
-    personas = [generate_persona(target, client) for _ in range(n_samples)]
+def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
+    personas = [generate_persona(target, client, disposition) for disposition in CHARGING_DISPOSITIONS]
+    n_samples = len(personas)
     actions = [[answer_scenario(persona, scenario, client) for scenario in CHARGING_SCENARIOS] for persona in personas]
 
     scores = [0] * n_samples
@@ -199,6 +222,7 @@ def generate_best_persona(target: Profile, client: OpenAI, n_samples: int = 3) -
     candidates = [
         PersonaCandidate(
             persona = personas[persona_index],
+            charging_disposition = CHARGING_DISPOSITIONS[persona_index],
             actions = actions[persona_index],
             score = scores[persona_index]
         )
