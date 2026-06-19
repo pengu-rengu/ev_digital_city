@@ -64,10 +64,10 @@ def test_generate_best_persona_picks_tournament_winner(monkeypatch):
     monkeypatch.setattr(personas, "answer_scenario", lambda persona, scenario, client: ScenarioResponse(action = "a", reasoning = "r"))
     monkeypatch.setattr(personas, "rank_personas", lambda profile, scenario, responses, client: RankingResult(reasoning = "r", ranking = [1, 2, 3]))
 
-    artifact = generate_best_persona(make_profile(), client = None, samples = 3)
+    artifact = generate_best_persona(make_profile(), client = None, n_samples = 3)
     assert artifact.best_index == 0
     assert artifact.personas[0].persona == "persona0"
-    assert artifact.personas[0].score == 1.0
+    assert artifact.personas[0].score == 4
     assert len(artifact.personas) == 3
     assert len(artifact.charging_rankings) == 2
     assert artifact.charging_rankings[0].ranking == [0, 1, 2]

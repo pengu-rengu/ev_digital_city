@@ -20,7 +20,7 @@ class ScenarioRanking(BaseModel):
 class PersonaCandidate(BaseModel):
     persona: str
     actions: list[ScenarioResponse]
-    score: float
+    score: int
 
 class PersonaArtifact(BaseModel):
     personas: list[PersonaCandidate]
@@ -62,37 +62,23 @@ def format_profile(profile: Profile) -> str:
     return text
 
 def generate_persona(profile: Profile, client: OpenAI) -> str:
-    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study.
-
-You will be given a Profile, which contains demographics and a list of trips taken on a single travel-diary day.
-Your persona must plausibly fit the target Profile. Make the person's routine and the rhythm of their day inferable from the persona.
+    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day. Your persona must plausibly fit the Profile and make the person's routine, day-to-day variation, and EV charging habits inferable.
 
 DON'T:
-Do not exactly restate the trip list. Do not produce time-stamped itineraries or hour-by-hour schedules.
-Do not exactly restate age group, household income, employment status, student status, or household size.
+- Restate the trip list, time-stamped itineraries, or hour-by-hour schedules.
+- Restate age group, household income, employment status, student status, or household size verbatim.
+- Lock the person into one fixed daily schedule — the trip list is one day out of many.
+- Assume home charging: this person has NO home charging and charges only away from home.
+- State exact kWh, exact battery percentages at exact times, or a fixed charging schedule.
+- Hedge. Do not use "probably", "likely", or "suggests"; state tendencies as fact.
 
 DO:
-Do provide general demographics that would help infer this person's trip schedule
-Do provide time windows (e.g. early morning, late afternoon), along with a real world explanation
-Do provide activities the person usually does, along with a real world explanation
-
-ADD VARIATION:
-The trip list is ONE day out of many. Describe the person's typical pattern and how it shifts day to day, not a single fixed schedule.
-- Separate non-negotiable anchors (work start, school pickup) from discretionary activities (gym, errands, meals). Make anchors clear and firm; leave discretionary activities loose in timing and presence.
-- Convey what is routine versus what changes. Example: "Some weeks she skips the gym.")
-- Give frequencies and tendencies, not single occurrences. ("Shops two or three times a week", not one shopping trip.)
-- Give the person's preferences and trade-offs (values convenience, avoids rush hour, prefers charging while already stopped) so their choices can be inferred in different situations, rather than stating fixed outcomes.
-- Describe conditional behavior. ("On busy days he eats out; otherwise he cooks at home.")
-- Convey the rough load of the day (a few errands around work), not an exact enumerated chain of stops in fixed order.
-
-EV CHARGING:
-This person drives an EV and has NO home charging — they cannot charge at home at all and rely entirely on charging away from home during the day, at public stations or at work when workplace charging is available. Convey their away-from-home charging behavior as part of who they are:
-- Where they plug in: a dedicated charging stop vs topping up opportunistically while already stopped for another activity (work, shopping, the gym).
-- How low they let the battery get before they seek out a charger (range-anxiety threshold).
-- Charge-level / speed trade-off: a fast DC charge when time is short vs a slower top-up while parked a while.
-- How they react when a charger is busy: willingness to wait in a queue, relocate to another stop, or skip charging that day.
-- Price sensitivity at public chargers.
-Give habits and tendencies, not fixed sessions. Make charging conditional and variable day to day. Do not state exact kWh, exact battery percentages at exact times, or a fixed charging schedule.
+- Give general demographics that help infer the person's trip schedule.
+- Give time windows (early morning, late afternoon) and usual activities, each with a real-world reason.
+- Separate firm anchors (work start, school pickup) from loose discretionary activities (gym, errands, meals).
+- Give frequencies, tendencies, and conditional day-to-day variation, not single occurrences.
+- Give preferences and trade-offs so the person's choices can be inferred in new situations.
+- Convey their away-from-home EV charging: where they plug in (a dedicated stop vs topping up while already stopped), how low they let the battery get, fast DC vs slower top-up, how they react to a busy charger (wait, relocate, or skip), and price sensitivity.
 
 EXAMPLES:
 
@@ -100,13 +86,19 @@ Bad: He leaves the house at 6:30 am
 Good: He gets up very early in the morning to avoid traffic
 
 Bad: She has a pick-up trip at 3:30 pm
-Good: She pick ups her kids from school in the mid-afternoon, around when school typically ends
+Good: She picks up her kids from school in the mid-afternoon, around when school typically ends
 
 Bad: He takes a break from work and goes to a fast food restaurant around 12:30 pm
 Good: He does not like cooking at home and values convenience, especially for lunch
 
-This information is evidence about the person, not the persona itself.
-Be confident about the person's tendencies, including what varies day to day. State variation as fact, not as hedging about your guess. Do not use words like "probably", "likely", or "suggests".
+Bad: Some weeks he skips the gym on Tuesday
+Good: Some weeks he skips the gym when work runs long
+
+Bad: He charges to 80% at 2:15 pm
+Good: He tops up while already stopped for an errand and avoids letting the battery get too low
+
+Bad: She charges every day right after work
+Good: On long-driving days she seeks out a fast charger; most days she charges while running errands
 """
 
     profile_str = format_profile(profile)
@@ -127,7 +119,7 @@ Generate one persona from this profile."""
 
 CHARGING_SCENARIOS = [
     "All the chargers at the stop where you planned to charge are busy when you arrive. Do you wait for one to free up, drive to a different stop to charge, or skip charging today?",
-    "You only have a short stop before you need to move on, but your battery is low. Do you pay for a fast DC charge now, or do a slower top-up while parked somewhere later in the day?",
+    "You only have a short stop before you need to move on, but your battery is low. Do you pay for a fast DC charge now, or do a slower charge while parked somewhere later in the day?",
     "You will pass several stops today where you could plug in. Which one do you choose to charge at, and why?",
     "Public charging prices have spiked today. Does that change where, when, or whether you charge?",
     "Your battery is low and you have a long stretch of driving ahead with no stop already planned. What do you do?"
@@ -183,32 +175,44 @@ Rank the people."""}
     print(result.output_parsed, end = "\n\n\n")
     return result.output_parsed
 
-def generate_best_persona(target: Profile, client: OpenAI, samples: int = 3) -> PersonaArtifact:
-    personas = [generate_persona(target, client) for i in range(samples)]
+def generate_best_persona(target: Profile, client: OpenAI, n_samples: int = 3) -> PersonaArtifact:
+    personas = [generate_persona(target, client) for _ in range(n_samples)]
     actions = [[answer_scenario(persona, scenario, client) for scenario in CHARGING_SCENARIOS] for persona in personas]
 
-    scores = [0.0] * samples
+    scores = [0] * n_samples
     rankings: list[ScenarioRanking] = []
 
     for index in range(len(CHARGING_SCENARIOS)):
-        responses = [actions[persona_index][index] for persona_index in range(samples)]
+        responses = [actions[persona_index][index] for persona_index in range(n_samples)]
         result = rank_personas(target, CHARGING_SCENARIOS[index], responses, client)
         order = [label - 1 for label in result.ranking]
-        if sorted(order) != list(range(samples)):
-            raise ValueError(f"Ranking {result.ranking} is not a permutation of 1..{samples}")
+        if sorted(order) != list(range(n_samples)):
+            raise ValueError(f"Ranking {result.ranking} is not a permutation of 1..{n_samples}")
         for position, persona_index in enumerate(order):
-            scores[persona_index] += samples - 1 - position
-        rankings.append(ScenarioRanking(scenario = CHARGING_SCENARIOS[index], reasoning = result.reasoning, ranking = order))
+            scores[persona_index] += n_samples - 1 - position
+        rankings.append(ScenarioRanking(
+            scenario = CHARGING_SCENARIOS[index],
+            reasoning = result.reasoning,
+            ranking = order
+        ))
 
-    max_points = len(CHARGING_SCENARIOS) * (samples - 1)
     candidates = [
-        PersonaCandidate(persona = personas[persona_index], actions = actions[persona_index], score = scores[persona_index] / max_points)
-        for persona_index in range(samples)
+        PersonaCandidate(
+            persona = personas[persona_index],
+            actions = actions[persona_index],
+            score = scores[persona_index]
+        )
+        for persona_index in range(n_samples)
     ]
-    best_index = max(range(samples), key = lambda persona_index: scores[persona_index])
-    print(f"Best persona {best_index}: score={candidates[best_index].score:.2f}")
+    best_index = max(range(n_samples), key = lambda persona_index: scores[persona_index])
+    print(f"Best persona {best_index}: score={candidates[best_index].score}")
 
-    return PersonaArtifact(personas = candidates, best_index = best_index, target_profile = target, charging_rankings = rankings)
+    return PersonaArtifact(
+        personas = candidates,
+        best_index = best_index,
+        target_profile = target,
+        charging_rankings = rankings
+    )
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
@@ -229,7 +233,7 @@ if __name__ == "__main__":
     artifact = generate_best_persona(target, client)
     best = artifact.personas[artifact.best_index]
     print(best.persona)
-    print(f"Charging score: {best.score:.2f}")
+    print(f"Charging score: {best.score}")
 
     with open("artifacts/personas.json", "w") as file:
         json.dump([json.loads(artifact.model_dump_json())], file, indent = 2)
