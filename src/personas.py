@@ -1,33 +1,12 @@
 import dotenv
 import json
-from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from profiles import Profile, Archetype, hhmm_to_mins
-
-Activity = Literal["Home", "Work", "Volunteer", "School", "Shopping", "Meal (quick-stop)", "Meal", "Gas", "Health care", "Non-shopping errand", "Socialize", "Civic/Religious", "Exercise", "Recreation", "Entertainment", "Drop off/pick up", "Other"]
-
-class TripGuess(BaseModel):
-    origin_activity: Activity
-    dest_activity: Activity
-    departure_time: str
-    arrival_time: str
-
-class TrajectoryGuess(BaseModel):
-    reasoning: str
-    trips: list[TripGuess]
-
-class Iteration(BaseModel):
-    persona: str
-    guesses: list[TrajectoryGuess]
-    final_score: float
-    reflection: str | None
+from profiles import Profile, Archetype
 
 class PersonaArtifact(BaseModel):
-    best_persona: str
-    best_score: float
+    persona: str
     target_profile: Profile
-    iterations: list[Iteration]
 
 def format_profile(profile: Profile) -> str:
     text = f"Age Group: {profile.age_group}\n"
@@ -52,7 +31,7 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, client: OpenAI, last_persona: str | None, reflection: str | None) -> str:
+def generate_persona(profile: Profile, client: OpenAI) -> str:
     system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study.
 
 You will be given a Profile, which contains demographics and a list of trips taken on a single travel-diary day.
@@ -67,6 +46,15 @@ Do provide general demographics that would help infer this person's trip schedul
 Do provide time windows (e.g. early morning, late afternoon), along with a real world explanation
 Do provide activities the person usually does, along with a real world explanation
 
+ADD VARIATION:
+The trip list is ONE day out of many. Describe the person's typical pattern and how it shifts day to day, not a single fixed schedule.
+- Separate non-negotiable anchors (work start, school pickup) from discretionary activities (gym, errands, meals). Make anchors clear and firm; leave discretionary activities loose in timing and presence.
+- Convey what is routine versus what changes. Example: "Some weeks she skips the gym.")
+- Give frequencies and tendencies, not single occurrences. ("Shops two or three times a week", not one shopping trip.)
+- Give the person's preferences and trade-offs (values convenience, avoids rush hour, prefers charging while already stopped) so their choices can be inferred in different situations, rather than stating fixed outcomes.
+- Describe conditional behavior. ("On busy days he eats out; otherwise he cooks at home.")
+- Convey the rough load of the day (a few errands around work), not an exact enumerated chain of stops in fixed order.
+
 EXAMPLES:
 
 Bad: He leaves the house at 6:30 am
@@ -79,20 +67,9 @@ Bad: He takes a break from work and goes to a fast food restaurant around 12:30 
 Good: He does not like cooking at home and values convenience, especially for lunch
 
 This information is evidence about the person, not the persona itself.
-Be confident in your claims. Do not use words like "probably", "likely", or "suggests".
+Be confident about the person's tendencies, including what varies day to day. State variation as fact, not as hedging about your guess. Do not use words like "probably", "likely", or "suggests".
 """
 
-    if last_persona is not None:
-        system_prompt += f"""
-Your previous persona attempt is below, along with guidance on how to improve it. Produce a better persona that applies the guidance, keeping what worked and fixing what the guidance points out.
-
-Previous persona:
-{last_persona}
-
-Guidance:
-{reflection}
-"""
-    
     profile_str = format_profile(profile)
     user_prompt = f"""Profile:
 {profile_str}
@@ -108,128 +85,6 @@ Generate one persona from this profile."""
     )
     print(response.output_text, end = "\n\n\n")
     return response.output_text
-
-def within_tolerance(guess: str, actual: str, tolerance: int = 30) -> bool:
-    return abs(hhmm_to_mins(guess) - hhmm_to_mins(actual)) <= tolerance
-
-def guess_trajectory(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
-    num_trips = len(target.trips)
-
-    system_prompt = f"""You are the following persona. Stay fully in character as this person.
-
-Persona:
-{persona}
-
-You took {num_trips} trips on your travel-diary day. Reconstruct them in order. For each trip, give the origin activity, destination activity, departure time (HH:MM), and arrival time (HH:MM).
-
-Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (quick-stop), Meal, Gas, Health care, Non-shopping errand, Socialize, Civic/Religious, Exercise, Recreation, Entertainment, Drop off/pick up, Other."""
-    
-    user_prompt = f"Reconstruct your {num_trips} trips."
-
-    response = client.responses.parse(
-        model = "gpt-5.4-mini",
-        input = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        text_format = TrajectoryGuess
-    )
-    print(response.output_parsed, end = "\n\n\n")
-    guess = response.output_parsed
-
-    hits = 0
-    for guessed, actual in zip(guess.trips, target.trips):
-        hits += guessed.origin_activity == actual.origin_activity
-        hits += guessed.dest_activity == actual.dest_activity
-        hits += within_tolerance(guessed.departure_time, actual.departure_time)
-        hits += within_tolerance(guessed.arrival_time, actual.arrival_time)
-
-    score = hits / (4 * num_trips)
-    return guess, score
-
-def score_persona(target: Profile, persona: str, client: OpenAI, num_guesses: int = 3) -> tuple[list[TrajectoryGuess], TrajectoryGuess, float]:
-    attempts = [guess_trajectory(target, persona, client) for _ in range(num_guesses)]
-    guesses = [guess for guess, _ in attempts]
-    final_score = sum(score for _, score in attempts) / num_guesses
-    worst_guess = min(attempts, key = lambda attempt: attempt[1])[0]
-    return guesses, worst_guess, final_score
-
-def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenAI) -> str:
-    guess_text = "\n\n".join(
-        f"Trip {i + 1}:\nDeparture Time: {trip.departure_time}\nArrival Time: {trip.arrival_time}\nOrigin Activity: {trip.origin_activity}\nDestination Activity: {trip.dest_activity}"
-        for i, trip in enumerate(guess.trips)
-    )
-
-    system_prompt = """You are improving a persona used in a travel-behavior study. Someone role-playing the persona tried to reconstruct the person's real trips (which activities they went to and roughly when) and produced a guess. You are given the persona, that guess, and the person's actual trips.
-
-Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and how it should make the more inferable.
-
-Do not restate or quote the actual profile or trip values. Give guidance about what the persona should convey, not the answers themselves."""
-
-    target_str = format_profile(target)
-    user_prompt = f"""Persona:
-{persona}
-
-Reconstruction guess:
-{guess_text}
-
-Actual:
-{target_str}
-
-How should the persona be improved?"""
-
-    response = client.responses.create(
-        model = "gpt-5.4-mini",
-        reasoning = {
-            "effort": "medium",
-            "summary": "auto"
-        },
-        input = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-    )
-    print(response.output_text, end="\n\n\n")
-    return response.output_text
-
-def refine_persona(target: Profile, client: OpenAI, threshold: float = 1.0, max_iterations: int = 5) -> PersonaArtifact:
-    best_persona: str | None = None
-    best_score = float("-inf")
-    last_persona: str | None = None
-    reflection: str | None = None
-    iterations: list[Iteration] = []
-
-    for iteration in range(max_iterations):
-        persona = generate_persona(target, client, last_persona, reflection)
-        guesses, worst_guess, final_score = score_persona(target, persona, client)
-        print(f"Iteration {iteration}: final={final_score:.2f}")
-
-        if final_score > best_score:
-            best_score = final_score
-            best_persona = persona
-
-        reflection = None
-        if final_score < threshold and iteration < max_iterations - 1:
-            reflection = reflect(target, persona, worst_guess, client)
-            last_persona = persona
-
-        new_iteration = Iteration(
-            persona = persona,
-            guesses = guesses,
-            final_score = final_score,
-            reflection = reflection
-        )
-        iterations.append(new_iteration)
-
-        if final_score >= threshold:
-            break
-
-    return PersonaArtifact(
-        best_persona = best_persona,
-        best_score = best_score,
-        target_profile = target,
-        iterations = iterations
-    )
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
@@ -247,9 +102,9 @@ if __name__ == "__main__":
             profiles.append(profile)
     
     target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][0]
-    artifact = refine_persona(target, client = client)
-    print(artifact.best_persona)
-    print(f"Final score: {artifact.best_score:.2f}")
+    persona = generate_persona(target, client)
+    artifact = PersonaArtifact(persona = persona, target_profile = target)
+    print(artifact.persona)
 
     with open("artifacts/personas.json", "w") as file:
         json.dump([json.loads(artifact.model_dump_json())], file, indent = 2)

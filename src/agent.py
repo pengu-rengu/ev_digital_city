@@ -6,9 +6,9 @@ import random
 import numpy as np
 from typing import Literal
 from openai import OpenAI
-from personas import PersonaArtifact
+from personas import PersonaArtifact, format_profile
 from pydantic import BaseModel
-from profiles import Archetype, Attributes, hhmm_to_mins, mins_to_hhmm
+from profiles import Archetype, Attributes, Profile, hhmm_to_mins, mins_to_hhmm
 from nodes import OsmNode, ChargerNode
 from roads import Road
 from shapely.geometry import LineString, MultiPoint, Point
@@ -59,6 +59,7 @@ class Schedule(BaseModel):
 
 class Agent(BaseModel):
     persona: str
+    profile: Profile | None = None
     archetype: Archetype
     attributes: Attributes
     schedule: Schedule
@@ -67,7 +68,8 @@ class Agent(BaseModel):
 
 def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int) -> Agent:
     return Agent(
-        persona = persona_artifact.best_persona,
+        persona = persona_artifact.persona,
+        profile = persona_artifact.target_profile,
         archetype = persona_artifact.target_profile.archetype,
         attributes = persona_artifact.target_profile.attributes,
         schedule = Schedule(
@@ -319,7 +321,7 @@ class AppendToScheduleTool(BaseModel):
         if new_schedule.blocks:
             
             t = new_schedule.blocks.pop().start_time
-            node_to_node_time = round(DistanceTimeToNodeTool(
+            node_to_node_time = math.ceil(DistanceTimeToNodeTool(
                 node_id = self.node_id
             ).run(new_schedule.blocks[-1].node_id, nodes, roads)[1])
 
@@ -330,7 +332,7 @@ class AppendToScheduleTool(BaseModel):
             t += node_to_node_time
         else:
             t = new_schedule.start_time
-            home_to_node_time = round(DistanceTimeToNodeTool(
+            home_to_node_time = math.ceil(DistanceTimeToNodeTool(
                 node_id = self.node_id
             ).run(agent.home_node_id, nodes, roads)[1])
 
@@ -365,7 +367,7 @@ class AppendToScheduleTool(BaseModel):
             node_block.charge_start_time = charge_start
 
         t += self.dwell_time
-        node_to_home_time = round(DistanceTimeToNodeTool(
+        node_to_home_time = math.ceil(DistanceTimeToNodeTool(
             node_id = agent.home_node_id
         ).run(self.node_id, nodes, roads)[1])
 
@@ -389,12 +391,15 @@ def current_node_id(agent: Agent) -> int:
             return block.node_id
     return agent.home_node_id
 
-def build_system_prompt(agent: Agent) -> str:
+def build_system_prompt(agent: Agent, use_profile: bool = False) -> str:
     work_arrangement = agent.attributes.work_arrangement.value if agent.attributes.work_arrangement else "Unknown"
+    if use_profile:
+        intro = f"Profile:\n{format_profile(agent.profile)}\n"
+    else:
+        intro = f"Persona:\n{agent.persona}"
     return f"""You are role-playing as the following person, planning where you go on a typical day.
 
-Persona:
-{agent.persona}
+{intro}
 
 Archetype: {agent.archetype.value}
 Caregiver: {agent.attributes.is_caregiver}
@@ -406,7 +411,8 @@ You start and end the day at your home (node id {agent.home_node_id}).
 Node categories: house, office, supermarket, school, gym, mall, restaurant, clinic, doctors, pharmacy, fast_food, park, retail, bank, post_office, cinema, cafe, bar, pub.
 
 You drive an electric vehicle and must charge exactly once during the day.
-Charge at a stop that has an attached or standalone charging station by passing charge_level (L1, L2, or DC) and charge_start_hh_mm to append_to_schedule.
+Charge at a stop that has an attached or standalone charging station by passing charge_level (L1, L2, or DC) and charge_start_hh_mm to append_to_schedule. 
+You can only charge at a node that has a "Charging Station".
 Charging takes a fixed time by level: L1 = 3 hours, L2 = 1 hour, DC = 30 minutes. The full charge window must fit inside that stop's dwell time, so make the dwell long enough.
 
 Respond with exactly ONE action per turn — never multiple. Build a realistic daily schedule:
@@ -418,8 +424,12 @@ Respond with exactly ONE action per turn — never multiple. Build a realistic d
 If you make a mistake, call reset_schedule to clear your schedule and start over from set_start_time."""
 
 def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Agent:
+
+    system_prompt = build_system_prompt(agent, use_profile = True)
+    print(system_prompt)
+
     agent.context = [
-        {"role": "system", "content": build_system_prompt(agent)},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": "Plan your full day."}
     ]
 
@@ -471,8 +481,8 @@ if __name__ == "__main__":
     home_node_id = next(node.id for node in nodes if node.category == "house")
     agent = run_agent(agent_from_persona_artifact(artifact, home_node_id), nodes, roads, client)
 
-    for message in agent.context:
-        print(message, end = "\n\n")
+    #for message in agent.context:
+    #    print(message, end = "\n\n")
 
     with open("artifacts/agents.json", "w") as file:
         json.dump([json.loads(agent.model_dump_json())], file, indent = 2)
