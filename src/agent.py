@@ -68,7 +68,7 @@ class Agent(BaseModel):
 
 def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int) -> Agent:
     return Agent(
-        persona = persona_artifact.persona,
+        persona = persona_artifact.personas[persona_artifact.best_index].persona,
         profile = persona_artifact.target_profile,
         archetype = persona_artifact.target_profile.archetype,
         attributes = persona_artifact.target_profile.attributes,
@@ -410,9 +410,8 @@ Irregular Schedule: {agent.attributes.schedule_irregular}
 You start and end the day at your home (node id {agent.home_node_id}).
 Node categories: house, office, supermarket, school, gym, mall, restaurant, clinic, doctors, pharmacy, fast_food, park, retail, bank, post_office, cinema, cafe, bar, pub.
 
-You drive an electric vehicle and must charge exactly once during the day.
-Charge at a stop that has an attached or standalone charging station by passing charge_level (L1, L2, or DC) and charge_start_hh_mm to append_to_schedule. 
-You can only charge at a node that has a "Charging Station".
+You drive an electric vehicle. You cannot charge at home, so you must charge exactly once during the day at an away-from-home stop that has a charging station.
+Charge by passing charge_level (L1, L2, or DC) and charge_start_hh_mm to append_to_schedule; you can only charge at a node that has a "Charging Station".
 Charging takes a fixed time by level: L1 = 3 hours, L2 = 1 hour, DC = 30 minutes. The full charge window must fit inside that stop's dwell time, so make the dwell long enough.
 
 Respond with exactly ONE action per turn — never multiple. Build a realistic daily schedule:
