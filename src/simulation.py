@@ -3,7 +3,7 @@ import dotenv
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from agent import Agent, NodeBlock, TravelBlock, Schedule, CHARGE_DURATION, level_ports
+from agent import Agent, NodeBlock, TravelBlock, Schedule, CHARGE_POWER_KW, level_ports
 from nodes import OsmNode, ChargerNode
 from profiles import hhmm_to_mins, mins_to_hhmm
 
@@ -38,7 +38,7 @@ class ListChargeStopsTool(BaseModel):
             if not isinstance(block, NodeBlock):
                 continue
             node = node_by_id[block.node_id]
-            levels = [level for level in CHARGE_DURATION if level_ports(node, level) > 0]
+            levels = [level for level in CHARGE_POWER_KW if level_ports(node, level) > 0]
             if not levels:
                 continue
             text += f"Node ID: {node.id}\n"
@@ -56,7 +56,7 @@ class WaitInQueueTool(BaseModel):
         node = next(node for node in nodes if node.id == session.block.node_id)
         capacity = level_ports(node, session.block.charge_level)
         free_at = earliest_free(session, sessions, capacity)
-        if free_at + CHARGE_DURATION[session.block.charge_level] > session.block.end_time:
+        if free_at + session.block.charge_duration > session.block.end_time:
             raise ValueError("Queue pushes your charge past the end of your stop; relocate instead")
         session.block.charge_start_time = free_at
         return f"You wait in a queue; charge start moved to {mins_to_hhmm(free_at)}."
@@ -76,8 +76,9 @@ class ReadjustChargeTool(BaseModel):
         if level_ports(node, self.charge_level) == 0:
             raise ValueError(f"Node {self.node_id} has no {self.charge_level} ports")
 
+        duration = session.block.charge_duration
         new_start = hhmm_to_mins(self.charge_start_hh_mm)
-        new_end = new_start + CHARGE_DURATION[self.charge_level]
+        new_end = new_start + duration
 
         original_start = session.block.charge_start_time
         if new_start < original_start:
@@ -88,8 +89,10 @@ class ReadjustChargeTool(BaseModel):
 
         session.block.charge_level = None
         session.block.charge_start_time = None
+        session.block.charge_duration = None
         target.charge_level = self.charge_level
         target.charge_start_time = new_start
+        target.charge_duration = duration
         return f"Charge moved to node {self.node_id} at {mins_to_hhmm(new_start)}."
 
 class GiveUpTool(BaseModel):
@@ -107,7 +110,7 @@ class ChargeResolution(BaseModel):
     action: ListChargeStopsTool | WaitInQueueTool | ReadjustChargeTool | GiveUpTool
 
 def session_end(block: NodeBlock) -> int:
-    return block.charge_start_time + CHARGE_DURATION[block.charge_level]
+    return block.charge_start_time + block.charge_duration
 
 def sessions_for(agents: list[Agent]) -> list[ChargeSession]:
     return [
@@ -229,7 +232,7 @@ def agent_status(agent: Agent, time: int) -> tuple[str, int | None]:
     for block in agent.schedule.blocks:
         if block.start_time <= time < block.end_time:
             if isinstance(block, NodeBlock):
-                if block.charge_level and block.charge_start_time <= time < block.charge_start_time + CHARGE_DURATION[block.charge_level]:
+                if block.charge_level and block.charge_start_time <= time < block.charge_start_time + block.charge_duration:
                     return "charging", block.node_id
                 return "at_node", block.node_id
             return "traveling", None
@@ -271,30 +274,36 @@ if __name__ == "__main__":
         archetype = real_agent.archetype,
         attributes = real_agent.attributes,
         schedule = Schedule(start_time = 340, blocks = [
-            TravelBlock(start_time = 340, end_time = 345),
-            NodeBlock(node_id = gym_node_id, start_time = 345, end_time = 410, charge_level = "L2", charge_start_time = 346),
-            TravelBlock(start_time = 410, end_time = 425),
+            TravelBlock(start_time = 340, end_time = 345, distance = 2.0),
+            NodeBlock(node_id = gym_node_id, start_time = 345, end_time = 410, charge_level = "L2", charge_start_time = 346, charge_duration = 60),
+            TravelBlock(start_time = 410, end_time = 425, distance = 5.0),
             NodeBlock(node_id = office_node_id, start_time = 425, end_time = 1010),
-            TravelBlock(start_time = 1010, end_time = 1030)
+            TravelBlock(start_time = 1010, end_time = 1030, distance = 7.0)
         ]),
         context = [],
-        home_node_id = real_agent.home_node_id
+        home_node_id = real_agent.home_node_id,
+        battery_kwh = 65.0,
+        start_soc_kwh = 40.0,
+        soc_kwh = 40.0
     )
     mock_b = Agent(
         persona = "Mock driver: errand then gym then work.",
         archetype = real_agent.archetype,
         attributes = real_agent.attributes,
         schedule = Schedule(start_time = 340, blocks = [
-            TravelBlock(start_time = 340, end_time = 350),
+            TravelBlock(start_time = 340, end_time = 350, distance = 4.0),
             NodeBlock(node_id = bank_node_id, start_time = 350, end_time = 392),
-            TravelBlock(start_time = 392, end_time = 397),
-            NodeBlock(node_id = gym_node_id, start_time = 397, end_time = 470, charge_level = "L2", charge_start_time = 400),
-            TravelBlock(start_time = 470, end_time = 485),
+            TravelBlock(start_time = 392, end_time = 397, distance = 2.0),
+            NodeBlock(node_id = gym_node_id, start_time = 397, end_time = 470, charge_level = "L2", charge_start_time = 400, charge_duration = 60),
+            TravelBlock(start_time = 470, end_time = 485, distance = 5.0),
             NodeBlock(node_id = office_node_id, start_time = 485, end_time = 1005),
-            TravelBlock(start_time = 1005, end_time = 1025)
+            TravelBlock(start_time = 1005, end_time = 1025, distance = 7.0)
         ]),
         context = [],
-        home_node_id = real_agent.home_node_id
+        home_node_id = real_agent.home_node_id,
+        battery_kwh = 65.0,
+        start_soc_kwh = 40.0,
+        soc_kwh = 40.0
     )
 
     contending_agents = [real_agent, mock_a, mock_b]
