@@ -59,17 +59,17 @@ def test_format_profile_omits_unset_charging_access():
 
 def test_generate_best_persona_picks_tournament_winner(monkeypatch):
     ids = iter(["persona0", "persona1", "persona2"])
-    monkeypatch.setattr(personas, "CHARGING_SCENARIOS", ["s1", "s2"])
-    monkeypatch.setattr(personas, "CHARGING_DISPOSITIONS", ["d0", "d1", "d2"])
-    monkeypatch.setattr(personas, "generate_persona", lambda profile, client, charging_disposition: next(ids))
-    monkeypatch.setattr(personas, "answer_scenario", lambda persona, scenario, client: ScenarioResponse(action = "a", reasoning = "r"))
+    monkeypatch.setattr(personas, "SCENARIOS", {Archetype.FLEXIBLE_COMMUTER: ["s1", "s2"]})
+    monkeypatch.setattr(personas, "DISPOSITIONS", {Archetype.FLEXIBLE_COMMUTER: ["d0", "d1", "d2"]})
+    monkeypatch.setattr(personas, "generate_persona", lambda profile, client, disposition: next(ids))
+    monkeypatch.setattr(personas, "answer_scenario", lambda persona, scenario, client: ScenarioResponse(action = "A", reasoning = "r"))
     monkeypatch.setattr(personas, "rank_personas", lambda profile, scenario, responses, client: RankingResult(reasoning = "r", ranking = [1, 2, 3]))
 
     artifact = generate_best_persona(make_profile(), client = None)
     assert artifact.best_index == 0
     assert artifact.personas[0].persona == "persona0"
-    assert artifact.personas[0].charging_disposition == "d0"
+    assert artifact.personas[0].disposition == "d0"
     assert artifact.personas[0].score == 4
     assert len(artifact.personas) == 3
-    assert len(artifact.charging_rankings) == 2
-    assert artifact.charging_rankings[0].ranking == [0, 1, 2]
+    assert len(artifact.rankings) == 2
+    assert artifact.rankings[0].ranking == [0, 1, 2]

@@ -1,12 +1,14 @@
 import dotenv
 import json
+from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
 from profiles import Profile, Archetype
+from persona_data import DISPOSITIONS, SCENARIOS
 
 class ScenarioResponse(BaseModel):
     reasoning: str
-    action: str
+    action: Literal["A", "B", "C"]
 
 class RankingResult(BaseModel):
     reasoning: str
@@ -19,7 +21,7 @@ class ScenarioRanking(BaseModel):
 
 class PersonaCandidate(BaseModel):
     persona: str
-    charging_disposition: str
+    disposition: str
     actions: list[ScenarioResponse]
     score: int
 
@@ -27,7 +29,7 @@ class PersonaArtifact(BaseModel):
     personas: list[PersonaCandidate]
     best_index: int
     target_profile: Profile
-    charging_rankings: list[ScenarioRanking]
+    rankings: list[ScenarioRanking]
 
 def format_profile(profile: Profile) -> str:
     text = f"Age Group: {profile.age_group}\n"
@@ -62,8 +64,8 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, client: OpenAI, charging_disposition: str) -> str:
-    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day, along with a charging disposition: a short description of the person's general attitude toward charging their EV away from home. Your persona must plausibly fit the Profile and the charging disposition, and make the person's routine, day-to-day variation, and EV charging habits inferable.
+def generate_persona(profile: Profile, client: OpenAI, disposition: str) -> str:
+    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day, along with a disposition: a short description of the person's general behavioral attitude — how they travel, run their day, and charge their EV. Your persona must plausibly fit the Profile and the disposition, and make the person's routine, day-to-day variation, and EV charging habits inferable.
 
 DON'T:
 - Do not restate the trip list, time-stamped itineraries, or hour-by-hour schedules.
@@ -119,7 +121,7 @@ Good: He picks up his medicine from the pharmacy on the first of every month
 {profile_str}
 
 Disposition:
-{charging_disposition}
+{disposition}
 
 Generate one persona from this profile and disposition"""
 
@@ -133,33 +135,22 @@ Generate one persona from this profile and disposition"""
     print(response.output_text, end = "\n\n\n")
     return response.output_text
 
-CHARGING_DISPOSITIONS = [
-    "Cost-minimizer. Tolerates a low battery, hunts for the cheapest charge, is content with slow AC while parked, and rarely pays a DC fast-charge premium. Defers or skips charging on expensive or busy days.",
-    "Convenience-first. Charges early while plenty of range remains, pays for DC fast charging to stay on schedule, and will not wait in a queue or detour to save money.",
-    "Range-anxious planner. Tops up well before the battery gets low, plans charging stops ahead of the day, and prioritizes never getting stranded over both cost and convenience."
-]
-
-CHARGING_SCENARIOS = [
-    "All the chargers at the stop where you planned to charge are busy when you arrive. Do you wait for one to free up, drive to a different stop to charge, or skip charging today?",
-    "You only have a short stop before you need to move on, but your battery is low. Do you pay for a fast DC charge now, or do a slower charge while parked somewhere later in the day?",
-    "You will pass several stops today where you could plug in. Which one do you choose to charge at, and why?",
-    "Public charging prices have spiked today. Does that change where, when, or whether you charge?",
-    "Your battery is low and you have a long stretch of driving ahead with no stop already planned. What do you do?"
-]
-
 def answer_scenario(persona: str, scenario: str, client: OpenAI) -> ScenarioResponse:
-    response = client.responses.parse(
-        model = "gpt-5.4-mini",
-        input = [
-            {"role": "system", "content": f"""You are the following persona. Stay fully in character as this person.
+    system_prompt = f"""You are the following persona. Stay fully in character as this person.
 
 Persona:
 {persona}
 
-You have no way to charge at home, so all of your charging happens away from home during the day.
+You drive an electric vehicle and have no way to charge at home, so any charging you do happens away from home during the day.
 
-You will be given a situation. Respond with the charging action you actually take and why, true to who you are. Do not narrate as a third party."""},
-            {"role": "user", "content": scenario}
+You will be given a situation about your travel, charging, or daily life, with options A, B, and C. Choose exactly one option as your action and explain why in character. Narrate the reasoning in first-person, not as a third party."""
+    user_prompt = scenario
+
+    response = client.responses.parse(
+        model = "gpt-5.4-mini",
+        input = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ],
         text_format = ScenarioResponse
     )
@@ -169,28 +160,31 @@ You will be given a situation. Respond with the charging action you actually tak
 def rank_personas(profile: Profile, scenario: str, responses: list[ScenarioResponse], client: OpenAI) -> RankingResult:
     profile_str = format_profile(profile)
     responses_text = "\n".join(
-        f"Person {index + 1} action:\n{response.action}\n\nPerson {index + 1} reasoning:\n{response.reasoning}\n"
+        f"Person {index + 1} chose option {response.action}.\nPerson {index + 1} reasoning:\n{response.reasoning}\n"
         for index, response in enumerate(responses)
     )
-    result = client.responses.parse(
-        model = "gpt-5.4-mini",
-        reasoning = {"effort": "high"},
-        input = [
-            {"role": "system", "content": """You are an EV charging behavior expert. Several people each describe how they would handle the same charging situation. Rank them from most to least realistic for the actual person described in the Profile.
+    system_prompt = """You are a travel-behavior and EV charging expert. Several people each describe how they would handle the same situation. Rank them from most to least realistic for the actual person described in the Profile, given who they are and how they live.
 
 Assume no one has access to home charging. Treat any action or reasoning that relies on, assumes, or falls back to home charging as unrealistic.
 
-From the person's demographics, trips, and charging access, reason through what a real person like this would most plausibly do away from home. Penalize ignoring charger availability/contention, level-vs-time mismatches (expecting a full charge in a short stop), economically irrational choices, and any reliance on home charging.
+From the person's demographics, trips, and charging access, reason through what a real person like this would most plausibly do. Penalize choices inconsistent with their schedule, household, and budget, as well as ignoring charger availability/contention, level-vs-time mismatches (expecting a full charge in a short stop), economically irrational choices, and any reliance on home charging.
 
-Give your reasoning and the ranking as a list of person numbers from most to least realistic (e.g. [2, 1, 3]). Include every person exactly once."""},
-            {"role": "user", "content": f"""Profile:
+Give your reasoning and the ranking as a list of person numbers from most to least realistic (e.g. [2, 1, 3, 5, 4]). Include every person exactly once."""
+    user_prompt = f"""Profile:
 {profile_str}
 
 Scenario:
 {scenario}
 
 {responses_text}
-Rank the people."""}
+Rank the people."""
+
+    result = client.responses.parse(
+        model = "gpt-5.4-mini",
+        reasoning = {"effort": "high"},
+        input = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ],
         text_format = RankingResult
     )
@@ -198,23 +192,25 @@ Rank the people."""}
     return result.output_parsed
 
 def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
-    personas = [generate_persona(target, client, disposition) for disposition in CHARGING_DISPOSITIONS]
+    dispositions = DISPOSITIONS[target.archetype]
+    scenarios = SCENARIOS[target.archetype]
+    personas = [generate_persona(target, client, disposition) for disposition in dispositions]
     n_samples = len(personas)
-    actions = [[answer_scenario(persona, scenario, client) for scenario in CHARGING_SCENARIOS] for persona in personas]
+    actions = [[answer_scenario(persona, scenario, client) for scenario in scenarios] for persona in personas]
 
     scores = [0] * n_samples
     rankings: list[ScenarioRanking] = []
 
-    for index in range(len(CHARGING_SCENARIOS)):
+    for index in range(len(scenarios)):
         responses = [actions[persona_index][index] for persona_index in range(n_samples)]
-        result = rank_personas(target, CHARGING_SCENARIOS[index], responses, client)
+        result = rank_personas(target, scenarios[index], responses, client)
         order = [label - 1 for label in result.ranking]
         if sorted(order) != list(range(n_samples)):
             raise ValueError(f"Ranking {result.ranking} is not a permutation of 1..{n_samples}")
         for position, persona_index in enumerate(order):
             scores[persona_index] += n_samples - 1 - position
         rankings.append(ScenarioRanking(
-            scenario = CHARGING_SCENARIOS[index],
+            scenario = scenarios[index],
             reasoning = result.reasoning,
             ranking = order
         ))
@@ -222,7 +218,7 @@ def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
     candidates = [
         PersonaCandidate(
             persona = personas[persona_index],
-            charging_disposition = CHARGING_DISPOSITIONS[persona_index],
+            disposition = dispositions[persona_index],
             actions = actions[persona_index],
             score = scores[persona_index]
         )
@@ -235,7 +231,7 @@ def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
         personas = candidates,
         best_index = best_index,
         target_profile = target,
-        charging_rankings = rankings
+        rankings = rankings
     )
 
 if __name__ == "__main__":
@@ -253,11 +249,13 @@ if __name__ == "__main__":
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
     
-    target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][0]
-    artifact = generate_best_persona(target, client)
-    best = artifact.personas[artifact.best_index]
-    print(best.persona)
-    print(f"Charging score: {best.score}")
+    artifacts = []
+    for archetype in Archetype:
+        target = [profile for profile in profiles if profile.archetype == archetype][0]
+        artifact = generate_best_persona(target, client)
+        best = artifact.personas[artifact.best_index]
+        print(f"{archetype.value} best persona {artifact.best_index}: score={best.score}")
+        artifacts.append(json.loads(artifact.model_dump_json()))
 
     with open("artifacts/personas.json", "w") as file:
-        json.dump([json.loads(artifact.model_dump_json())], file, indent = 2)
+        json.dump(artifacts, file, indent = 2)
