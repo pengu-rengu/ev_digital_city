@@ -82,7 +82,7 @@ DO:
 - Do go into detail for the activities instead of leaving them as broad categories
 - Do separate anchor activities, such as work, or school pickup from loose discretionary activities, such as gym, errands, meals.
 - Do give frequencies, tendencies, and conditional day-to-day variation, not single occurrences.
-- Do describe activities across weeks or months instead of being locked in to one day.
+- Do ensure the persona describes both weekday and weekend behavior, since the person's routine differs between the two.
 - Do give preferences and trade-offs so the person's choices can be inferred in new situations.
 - Do convey away-from-home EV charging behavior: where they plug in, how low they let the battery get, fast DC vs slower port, how they react to a busy charger, and price sensitivity.
 

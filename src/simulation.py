@@ -273,6 +273,7 @@ if __name__ == "__main__":
         persona = "Mock driver: gym before work.",
         archetype = real_agent.archetype,
         attributes = real_agent.attributes,
+        day_type = "weekday",
         schedule = Schedule(start_time = 340, blocks = [
             TravelBlock(start_time = 340, end_time = 345, distance = 2.0),
             NodeBlock(node_id = gym_node_id, start_time = 345, end_time = 410, charge_level = "L2", charge_start_time = 346, charge_duration = 60),
@@ -290,6 +291,7 @@ if __name__ == "__main__":
         persona = "Mock driver: errand then gym then work.",
         archetype = real_agent.archetype,
         attributes = real_agent.attributes,
+        day_type = "weekday",
         schedule = Schedule(start_time = 340, blocks = [
             TravelBlock(start_time = 340, end_time = 350, distance = 4.0),
             NodeBlock(node_id = bank_node_id, start_time = 350, end_time = 392),

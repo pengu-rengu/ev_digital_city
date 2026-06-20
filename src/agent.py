@@ -70,6 +70,7 @@ class Agent(BaseModel):
     profile: Profile | None = None
     archetype: Archetype
     attributes: Attributes
+    day_type: Literal["weekday", "weekend"]
     schedule: Schedule
     context: list[dict]
     home_node_id: int
@@ -77,15 +78,15 @@ class Agent(BaseModel):
     start_soc_kwh: float
     soc_kwh: float
 
-def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int) -> Agent:
+def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int, day_type: Literal["weekday", "weekend"]) -> Agent:
     battery_kwh = float(np.clip(np.random.normal(BATTERY_KWH_MEAN, BATTERY_KWH_STD), BATTERY_KWH_MIN, BATTERY_KWH_MAX))
-    # start_soc_kwh = battery_kwh * float(np.random.uniform(0.3, 0.9))
-    start_soc_kwh = battery_kwh * 0.10  # DEBUG: forced 10% start SOC
+    start_soc_kwh = battery_kwh * float(np.random.triangular(0.1, 0.3, 0.9))
     return Agent(
         persona = persona_artifact.personas[persona_artifact.best_index].persona,
         profile = persona_artifact.target_profile,
         archetype = persona_artifact.target_profile.archetype,
         attributes = persona_artifact.target_profile.attributes,
+        day_type = day_type,
         schedule = Schedule(
             start_time = None,
             blocks = []
@@ -124,7 +125,7 @@ class SearchNodesTool(BaseModel):
             if node.category in self.categories and haversine_miles(origin_coords, node.coords) <= self.radius
         ]
         random.shuffle(matches)
-        return matches[:20]
+        return matches[:10]
 
     @staticmethod
     def format_charger(charger: ChargerNode) -> str:
@@ -440,7 +441,7 @@ def build_system_prompt(agent: Agent, use_profile: bool = False) -> str:
         intro = f"Profile:\n{format_profile(agent.profile)}\n"
     else:
         intro = f"Persona:\n{agent.persona}"
-    return f"""You are role-playing as the following person, planning where you go on a typical day.
+    return f"""You are role-playing as the following person, planning where you go on a typical {agent.day_type}.
 
 {intro}
 
@@ -450,6 +451,7 @@ Mobility: {agent.attributes.mobility_level.value}
 Work Arrangement: {work_arrangement}
 Irregular Schedule: {agent.attributes.schedule_irregular}
 
+Today is a {agent.day_type}. Your routine differs between weekdays and weekends, so plan the day that fits a typical {agent.day_type} for this person.
 You start and end the day at your home (node id {agent.home_node_id}).
 Node categories: house, office, supermarket, school, gym, mall, restaurant, clinic, doctors, pharmacy, fast_food, park, retail, bank, post_office, cinema, cafe, bar, pub.
 
@@ -537,10 +539,13 @@ if __name__ == "__main__":
         roads = [Road.model_validate(road) for road in json.load(file)]
 
     home_node_id = next(node.id for node in nodes if node.category == "house")
-    agent = run_agent(agent_from_persona_artifact(artifact, home_node_id), nodes, roads, client)
+    agents = [
+        run_agent(agent_from_persona_artifact(artifact, home_node_id, day_type), nodes, roads, client)
+        for day_type in ("weekday", "weekend")
+    ]
 
-    #for message in agent.context:
+    #for message in agents[0].context:
     #    print(message, end = "\n\n")
 
     with open("artifacts/agents.json", "w") as file:
-        json.dump([json.loads(agent.model_dump_json())], file, indent = 2)
+        json.dump([json.loads(agent.model_dump_json()) for agent in agents], file, indent = 2)

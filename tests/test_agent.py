@@ -181,7 +181,7 @@ def test_schedule_format() -> None:
     schedule = Schedule(
         start_time = 480,
         blocks = [
-            TravelBlock(start_time = 480, end_time = 495),
+            TravelBlock(start_time = 480, end_time = 495, distance = 5.0),
             NodeBlock(node_id = gym.id, start_time = 495, end_time = 525)
         ]
     )
@@ -239,9 +239,13 @@ def commuter_agent(home_node_id: int) -> Agent:
         persona = "A commuter.",
         archetype = Archetype.FLEXIBLE_COMMUTER,
         attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
+        day_type = "weekday",
         schedule = Schedule(start_time = None, blocks = []),
         context = [],
-        home_node_id = home_node_id
+        home_node_id = home_node_id,
+        battery_kwh = 60.0,
+        start_soc_kwh = 60.0,
+        soc_kwh = 60.0
     )
 
 
@@ -250,7 +254,7 @@ def test_run_agent_drives_tools() -> None:
     agent = commuter_agent(home.id)
     client = FakeClient([
         SetStartTimeTool(start_hh_mm = "08:00"),
-        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30"),
+        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30", charge_duration = 60),
         FinishTool()
     ])
 
@@ -264,17 +268,21 @@ def test_run_agent_drives_tools() -> None:
 def test_finish_blocked_until_charge() -> None:
     home, office, roads = charging_office()
     agent = commuter_agent(home.id)
+    agent.start_soc_kwh = 0.25
+    agent.soc_kwh = 0.25
     client = FakeClient([
         SetStartTimeTool(start_hh_mm = "08:00"),
+        AppendToScheduleTool(node_id = office.id, dwell_time = 120),
         FinishTool(),
-        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30"),
+        AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "10:10", charge_duration = 60),
         FinishTool()
     ])
 
     result = run_agent(agent, [home, office], roads, client)
 
-    assert client.responses.calls == 4
-    assert any(message["role"] == "user" and "not charged" in message["content"] for message in result.context)
+    assert client.responses.calls == 5
+    assert any(message["role"] == "user" and "make it home" in message["content"] for message in result.context)
+    assert any(isinstance(block, NodeBlock) and block.charge_level == "L2" for block in result.schedule.blocks)
 
 
 def test_charge_append_sets_charge() -> None:
@@ -282,7 +290,7 @@ def test_charge_append_sets_charge() -> None:
     agent = commuter_agent(home.id)
     agent.schedule.start_time = 480
 
-    schedule = AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30").run(agent, [home, office], roads)
+    schedule = AppendToScheduleTool(node_id = office.id, dwell_time = 120, charge_level = "L2", charge_start_hh_mm = "08:30", charge_duration = 60).run(agent, [home, office], roads)
 
     charged = next(block for block in schedule.blocks if isinstance(block, NodeBlock) and block.charge_level)
     assert charged.charge_level == "L2"
@@ -295,7 +303,7 @@ def test_charge_window_exceeds_dwell() -> None:
     agent.schedule.start_time = 480
 
     try:
-        AppendToScheduleTool(node_id = office.id, dwell_time = 30, charge_level = "L2", charge_start_hh_mm = "08:05").run(agent, [home, office], roads)
+        AppendToScheduleTool(node_id = office.id, dwell_time = 30, charge_level = "L2", charge_start_hh_mm = "08:05", charge_duration = 60).run(agent, [home, office], roads)
         raise AssertionError("expected ValueError")
     except ValueError as error:
         assert "fit your stop" in str(error)
@@ -314,14 +322,14 @@ def test_charge_no_ports() -> None:
         assert "no L2 ports" in str(error)
 
 
-def test_search_caps_at_20() -> None:
+def test_search_caps_at_10() -> None:
     origin = OsmNode(category = "house", metadata = {}, coords = (0.0, 0.0))
     offices = [OsmNode(category = "office", metadata = {}, coords = (0.0, 0.0001 * (index + 1))) for index in range(30)]
     nodes = [origin] + offices
 
     found = SearchNodesTool(radius = 10, categories = ["office"]).run(origin.id, nodes)
 
-    assert len(found) == 20
+    assert len(found) == 10
     assert all(node.category == "office" for node in found)
 
 
@@ -333,9 +341,13 @@ def test_append_rounds_travel_times() -> None:
         persona = "A commuter.",
         archetype = Archetype.FLEXIBLE_COMMUTER,
         attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
+        day_type = "weekday",
         schedule = Schedule(start_time = 480, blocks = []),
         context = [],
-        home_node_id = home.id
+        home_node_id = home.id,
+        battery_kwh = 60.0,
+        start_soc_kwh = 60.0,
+        soc_kwh = 60.0
     )
 
     schedule = AppendToScheduleTool(node_id = dest.id, dwell_time = 10).run(agent, [home, dest], roads)

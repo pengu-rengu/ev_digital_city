@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
 
-from nodes import reston_boundary
+from nodes import area_boundary
 
 SERVICE_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/ArcGIS/rest/services/VDOT_Posted_Speed_Limits/FeatureServer/0"
 PAGE_SIZE = 2000
@@ -76,12 +76,12 @@ def plot_roads(boundary: BaseGeometry, roads: list[Road]) -> None:
     ax.set_aspect("equal")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title("Reston road speed limits")
+    ax.set_title("Fairfax County area road speed limits")
     fig.tight_layout()
     fig.savefig("artifacts/roads_map.png", bbox_inches = "tight")
 
 if __name__ == "__main__":
-    boundary = reston_boundary()
+    boundary = area_boundary()
     features = fetch_speed_features(boundary)
     roads = build_roads(features)
     plot_roads(boundary, roads)
