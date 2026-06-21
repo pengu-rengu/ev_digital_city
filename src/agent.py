@@ -22,6 +22,21 @@ BATTERY_KWH_STD: float = 18.0
 BATTERY_KWH_MIN: float = 24.0
 BATTERY_KWH_MAX: float = 100.0
 
+# Share of households owning >=1 plug-in EV (BEV+PHEV) in the affluent inner-Fairfax area.
+# 8% midpoint (plausible 5-12%, low-med confidence). No peer-reviewed local estimate exists;
+# synthesized from registration data + EV ownership's strong high-income skew:
+#   Fairfax County ~37,193 EVs (2024, VA DMV / MWCOG) / ~414,000 households ~= 9% at
+#   1 EV/household; trimmed to 8% to allow some 2-EV households. [registration data]
+#   EV ownership skews high-income (~66% of US BEV/PHEV households earn >$100k; US EIA
+#   analysis of NHTS). [non-academic government data]
+EV_HOUSEHOLD_SHARE: float = 0.08
+
+# Mean EVs among EV-owning households; just above 1 (most own one EV alongside ICE vehicles).
+# ~1.1 (range 1.0-1.2). McDonald et al. (2024), Sustainability 16(12):5200,
+# doi:10.3390/su16125200 -- US EVs are predominantly owned by multi-vehicle households
+# (reported 92.7% of BEV-owning households have >=2 vehicles), typically holding one EV.
+EVS_PER_EV_HOUSEHOLD: float = 1.1
+
 def level_ports(node: OsmNode | ChargerNode, level: str) -> int:
     if isinstance(node, ChargerNode):
         return getattr(node, PORT_FIELD[level])
@@ -97,6 +112,9 @@ def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id:
         start_soc_kwh = start_soc_kwh,
         soc_kwh = start_soc_kwh
     )
+
+def num_agents(num_houses: int) -> int:
+    return round(num_houses * EV_HOUSEHOLD_SHARE * EVS_PER_EV_HOUSEHOLD)
 
 def haversine_miles(origin: tuple[float, float], dest: tuple[float, float]) -> float:
     lon1, lat1 = origin
