@@ -1,5 +1,3 @@
-import dotenv
-import json
 import math
 import heapq
 import random
@@ -80,32 +78,27 @@ class Schedule(BaseModel):
                 text += f"Travel: {start} - {end}\n"
         return text
 
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
 class Agent(BaseModel):
     persona: str
     profile: Profile | None = None
     archetype: Archetype
-    day_type: Literal["weekday", "weekend"]
-    schedule: Schedule
-    context: list[dict]
+    schedules: list[Schedule] = []
+    contexts: list[list[dict]] = []
     home_node_id: int
     battery_kwh: float
     start_soc_kwh: float
     soc_kwh: float
 
-def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int, day_type: Literal["weekday", "weekend"]) -> Agent:
+def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id: int) -> Agent:
     battery_kwh = float(np.clip(np.random.normal(BATTERY_KWH_MEAN, BATTERY_KWH_STD), BATTERY_KWH_MIN, BATTERY_KWH_MAX))
-    start_soc_kwh = battery_kwh * float(np.random.triangular(0.1, 0.3, 0.9))
+    start_soc_kwh = battery_kwh * float(np.random.uniform(0.1, 0.9))
     return Agent(
         persona = persona_artifact.personas[persona_artifact.best_index].persona,
         profile = persona_artifact.target_profile,
         archetype = persona_artifact.target_profile.archetype,
-        day_type = day_type,
-        schedule = Schedule(
-            start_time = None,
-            blocks = []
-        ),
         home_node_id = home_node_id,
-        context = [],
         battery_kwh = battery_kwh,
         start_soc_kwh = start_soc_kwh,
         soc_kwh = start_soc_kwh
@@ -347,8 +340,8 @@ class AppendToScheduleTool(BaseModel):
     charge_start_hh_mm: str | None = None
     charge_duration: int | None = None
 
-    def run(self, agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> Schedule:
-        new_schedule = agent.schedule.model_copy(deep = True)
+    def run(self, agent: Agent, schedule: Schedule, nodes: list[OsmNode | ChargerNode], roads: list[Road]) -> Schedule:
+        new_schedule = schedule.model_copy(deep = True)
 
         if not new_schedule.start_time:
             raise ValueError(f"Schedule must have start time. Use set_start_time tool")
@@ -445,56 +438,66 @@ class AgentAction(BaseModel):
     thought: str
     action: SearchNodesTool | DistanceTimeToNodeTool | SetStartTimeTool | AppendToScheduleTool | ResetScheduleTool | FinishTool
 
-def schedule_violations(agent: Agent, nodes: list[OsmNode | ChargerNode]) -> list[str]:
+def schedule_violations(schedule: Schedule, archetype: Archetype, is_weekday: bool, nodes: list[OsmNode | ChargerNode]) -> list[str]:
     category_by_id = {node.id: node.category for node in nodes}
-    stop_categories = [category_by_id.get(block.node_id, "") for block in agent.schedule.blocks if isinstance(block, NodeBlock)]
+    stop_categories = [category_by_id.get(block.node_id, "") for block in schedule.blocks if isinstance(block, NodeBlock)]
     has_office = "office" in stop_categories
     has_school = "school" in stop_categories
     other_count = sum(1 for category in stop_categories if category not in ("house", "office"))
-    is_weekday = agent.day_type == "weekday"
     violations: list[str] = []
 
-    if agent.archetype == Archetype.NON_COMMUTER:
+    if archetype == Archetype.NON_COMMUTER:
         if has_office:
             violations.append("As a Non-Commuter you do not commute to work — remove the office stop.")
-    elif agent.archetype == Archetype.PARENT_COMMUTER:
+    elif archetype == Archetype.PARENT_COMMUTER:
         if is_weekday and not has_office:
             violations.append("As a Parent Commuter your weekday must include a work (office) stop.")
         if is_weekday and not has_school:
             violations.append("As a Parent Commuter your weekday must include a school drop-off/pick-up stop.")
-    elif agent.archetype == Archetype.RIGID_COMMUTER:
+    elif archetype == Archetype.RIGID_COMMUTER:
         if is_weekday and not has_office:
             violations.append("As a Rigid Commuter your weekday must include a work (office) stop.")
         if is_weekday and other_count > 1:
             violations.append("As a Rigid Commuter you keep a tight routine — limit yourself to at most one non-work stop.")
-    elif agent.archetype == Archetype.FLEXIBLE_COMMUTER:
+    elif archetype == Archetype.FLEXIBLE_COMMUTER:
         if is_weekday and not has_office:
             violations.append("As a Flexible Commuter your weekday should include a work (office) stop.")
 
     return violations
 
-def current_node_id(agent: Agent) -> int:
-    for block in reversed(agent.schedule.blocks):
+def current_node_id(schedule: Schedule, home_node_id: int) -> int:
+    for block in reversed(schedule.blocks):
         if isinstance(block, NodeBlock):
             return block.node_id
-    return agent.home_node_id
+    return home_node_id
 
-def build_system_prompt(agent: Agent, use_profile: bool = False) -> str:
+def format_prior_schedules(agent: Agent, nodes: list[OsmNode | ChargerNode]) -> str:
+    text = ""
+    for day_index, schedule in enumerate(agent.schedules):
+        text += f"{DAY_NAMES[day_index]}:\n{schedule.format(nodes)}\n"
+    return text
+
+def build_system_prompt(agent: Agent, day_name: str, nodes: list[OsmNode | ChargerNode], use_profile: bool = False) -> str:
     if use_profile:
         intro = f"Profile:\n{format_profile(agent.profile)}\n"
     else:
         intro = f"Persona:\n{agent.persona}"
-    return f"""You are role-playing as the following person, planning where you go on a typical {agent.day_type}.
+    week_context = ""
+    if agent.schedules:
+        week_context += f"Earlier this week:\n{format_prior_schedules(agent, nodes)}\n"
+    week_context += f"You start {day_name} with {agent.soc_kwh:.1f} / {agent.battery_kwh:.1f} kWh ({agent.soc_kwh / agent.battery_kwh:.0%}).\n"
+    return f"""You are role-playing as the following person, planning where you go on {day_name}.
 
 {intro}
 
 Archetype: {agent.archetype.value}
 
-Today is a {agent.day_type}. Your routine differs between weekdays and weekends, so plan the day that fits a typical {agent.day_type} for this person.
+Today is {day_name}. Your routine differs between weekdays and weekends, so plan the day that fits this person on {day_name}.
 You start and end the day at your home (node id {agent.home_node_id}).
 Node categories: house, office, supermarket, school, gym, mall, restaurant, clinic, doctors, pharmacy, fast_food, park, retail, bank, post_office, cinema, cafe, bar, pub.
 
-You drive an electric vehicle with a {agent.battery_kwh:.0f} kWh battery, starting the day at {agent.start_soc_kwh:.0f} kWh. Driving uses about {CONSUMPTION_KWH_PER_MI} kWh per mile, so your battery drains as you travel. You cannot charge at home; any charging happens at an away-from-home stop that has a charging station.
+{week_context}
+You drive an electric vehicle with a {agent.battery_kwh:.0f} kWh battery. Driving uses about {CONSUMPTION_KWH_PER_MI} kWh per mile, so your battery drains as you travel. You cannot charge at home; any charging happens at an away-from-home stop that has a charging station.
 Charge by passing charge_level (L1, L2, or DC), charge_start_hh_mm, and charge_duration (minutes — you choose how long) to append_to_schedule; you can only charge at a node that has a "Charging Station".
 Charging adds power x time: L1 ~ 1.4 kW, L2 ~ 7.2 kW, DC ~ 50 kW (so 60 min of DC adds ~50 kWh, capped at your battery size). The full charge window must fit inside that stop's dwell time, so make the dwell long enough.
 You may charge zero or more times during the day. The only rule: your battery must never reach 0. Your remaining battery is shown after each stop.
@@ -507,34 +510,37 @@ Respond with exactly ONE action per turn — never multiple. Build a realistic d
 
 If you make a mistake, call reset_schedule to clear your schedule and start over from set_start_time."""
 
-def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Agent:
-
-    system_prompt = build_system_prompt(agent)
+def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Schedule:
+    day_name = DAY_NAMES[day_index]
+    is_weekday = day_index < 5
+    schedule = Schedule(start_time = None, blocks = [])
+    system_prompt = build_system_prompt(agent, day_name, nodes)
     print(system_prompt)
 
-    agent.context = [
+    opening = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Plan your full day."}
+        {"role": "user", "content": "Plan your day."}
     ]
+    context = list(opening)
 
     for _ in range(max_turns):
         response = client.responses.parse(
             model = "gpt-5.4-mini",
-            input = agent.context,
+            input = context,
             text_format = AgentAction
         )
         print(response.output_text, end = "\n\n\n")
-        agent.context.append({"role": "assistant", "content": response.output_text})
+        context.append({"role": "assistant", "content": response.output_text})
         action = response.output_parsed.action
         if isinstance(action, FinishTool):
-            violations = schedule_violations(agent, nodes)
+            violations = schedule_violations(schedule, agent.archetype, is_weekday, nodes)
             if violations:
-                agent.context.append({"role": "user", "content": " ".join(violations) + " Adjust your schedule, then call finish again."})
+                context.append({"role": "user", "content": " ".join(violations) + " Adjust your schedule, then call finish again."})
                 continue
-            home_trip = next((block for block in reversed(agent.schedule.blocks) if isinstance(block, TravelBlock)), None)
+            home_trip = next((block for block in reversed(schedule.blocks) if isinstance(block, TravelBlock)), None)
             home_trip_energy = home_trip.distance * CONSUMPTION_KWH_PER_MI if home_trip else 0.0
             if agent.soc_kwh - home_trip_energy <= 0:
-                agent.context.append({"role": "user", "content": (
+                context.append({"role": "user", "content": (
                     f"You cannot make it home: {home_trip_energy:.1f} kWh needed for the drive home "
                     f"but only {agent.soc_kwh:.1f} kWh on hand. Add or extend a charge before finishing."
                 )})
@@ -544,51 +550,35 @@ def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road
 
         try:
             if isinstance(action, SearchNodesTool):
-                output = SearchNodesTool.format_result(action.run(current_node_id(agent), nodes))
+                output = SearchNodesTool.format_result(action.run(current_node_id(schedule, agent.home_node_id), nodes))
             elif isinstance(action, DistanceTimeToNodeTool):
-                output = action.format_result(action.run(current_node_id(agent), nodes, roads))
+                output = action.format_result(action.run(current_node_id(schedule, agent.home_node_id), nodes, roads))
             elif isinstance(action, (SetStartTimeTool, ResetScheduleTool)):
-                agent.schedule = action.run(agent.schedule)
+                schedule = action.run(schedule)
                 if isinstance(action, ResetScheduleTool):
-                    agent.soc_kwh = agent.start_soc_kwh
-                    agent.context = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": "Plan your full day."}
-                    ]
-                output = agent.schedule.format(nodes)
+                    agent.soc_kwh = day_start_soc
+                    context = list(opening)
+                output = schedule.format(nodes)
                 output += f"Battery: {agent.soc_kwh:.1f} / {agent.battery_kwh:.1f} kWh ({agent.soc_kwh / agent.battery_kwh:.0%})\n"
             else:
-                agent.schedule = action.run(agent, nodes, roads)
-                output = agent.schedule.format(nodes)
+                schedule = action.run(agent, schedule, nodes, roads)
+                output = schedule.format(nodes)
                 output += f"Battery: {agent.soc_kwh:.1f} / {agent.battery_kwh:.1f} kWh ({agent.soc_kwh / agent.battery_kwh:.0%})\n"
         except ValueError as error:
             output = str(error)
 
         print(output)
-        agent.context.append({"role": "user", "content": output})
+        context.append({"role": "user", "content": output})
 
-    return agent
+    agent.contexts.append(context)
+    return schedule
 
-if __name__ == "__main__":
-    dotenv.load_dotenv(override = True)
-    client = OpenAI()
-
-    with open("artifacts/personas.json") as file:
-        artifact = PersonaArtifact.model_validate(json.load(file)[1])
-    
-    with open("artifacts/nodes.json") as file:
-        nodes = [ChargerNode.model_validate(node) if node["category"] == "charger" else OsmNode.model_validate(node) for node in json.load(file)]
-    with open("artifacts/roads.json") as file:
-        roads = [Road.model_validate(road) for road in json.load(file)]
-
-    home_node_id = next(node.id for node in nodes if node.category == "house")
-    agents = [
-        run_agent(agent_from_persona_artifact(artifact, home_node_id, day_type), nodes, roads, client)
-        for day_type in ("weekday", "weekend")
-    ]
-
-    #for message in agents[0].context:
-    #    print(message, end = "\n\n")
-
-    with open("artifacts/agents.json", "w") as file:
-        json.dump([json.loads(agent.model_dump_json()) for agent in agents], file, indent = 2)
+def replay_soc(schedule: Schedule, start_soc: float, battery_kwh: float) -> float:
+    soc = start_soc
+    for block in schedule.blocks:
+        if isinstance(block, TravelBlock):
+            soc -= block.distance * CONSUMPTION_KWH_PER_MI
+        elif isinstance(block, NodeBlock) and block.charge_level:
+            added = CHARGE_POWER_KW[block.charge_level] * block.charge_duration / 60
+            soc = min(battery_kwh, soc + added)
+    return soc

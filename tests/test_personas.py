@@ -5,18 +5,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import personas
 from personas import format_profile, generate_best_persona, RankingResult, ScenarioResponse
-from profiles import Archetype, Attributes, MobilityLevel, Profile, WorkArrangement
+from profiles import Archetype, Profile
 
 
 def make_profile(home_type: str | None = None, home_ownership: str | None = None, workplace_ev_charging: bool | None = None, telecommute_days: str | None = None, commute_freq: str | None = None) -> Profile:
     return Profile(
         archetype = Archetype.FLEXIBLE_COMMUTER,
-        attributes = Attributes(
-            is_caregiver = False,
-            mobility_level = MobilityLevel.MODERATE,
-            work_arrangement = WorkArrangement.HYBRID,
-            schedule_irregular = False
-        ),
         age_group = "35-44",
         household_income = "$75,000-$99,999",
         employment_status = "Employed full-time",

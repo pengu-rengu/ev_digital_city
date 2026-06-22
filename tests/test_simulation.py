@@ -5,8 +5,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent import Agent, NodeBlock, Schedule, TravelBlock
 from nodes import ChargerNode, OsmNode
-from profiles import Archetype, Attributes, MobilityLevel
-from simulation import ChargeResolution, ListChargeStopsTool, ReadjustChargeTool, WaitInQueueTool, build_simulation_events, first_contention, sessions_for, simulate
+from profiles import Archetype
+from simulation import ChargeResolution, ListChargeStopsTool, ReadjustChargeTool, WaitInQueueTool, build_simulation_events, first_contention, resolve_contentions, sessions_for
 
 
 def charger_node(coords: tuple[float, float], num_l2: int) -> ChargerNode:
@@ -27,10 +27,8 @@ def charging_agent(home_node_id: int, blocks: list[NodeBlock]) -> Agent:
     return Agent(
         persona = "A commuter.",
         archetype = Archetype.FLEXIBLE_COMMUTER,
-        attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
-        day_type = "weekday",
-        schedule = Schedule(start_time = 470, blocks = blocks),
-        context = [],
+        schedules = [Schedule(start_time = 470, blocks = blocks)],
+        contexts = [[]],
         home_node_id = home_node_id,
         battery_kwh = 60.0,
         start_soc_kwh = 60.0,
@@ -66,7 +64,7 @@ def test_detection_flags_latest_arrival() -> None:
     early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
     late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510, charge_duration = 60)])
 
-    contended = first_contention(sessions_for([early, late]), [node])
+    contended = first_contention(sessions_for([early, late], 0), [node])
 
     assert contended is not None
     assert contended.agent_index == 1
@@ -77,7 +75,7 @@ def test_detection_clears_with_enough_ports() -> None:
     early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
     late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510, charge_duration = 60)])
 
-    assert first_contention(sessions_for([early, late]), [node]) is None
+    assert first_contention(sessions_for([early, late], 0), [node]) is None
 
 
 def test_queue_resolution_shifts_start() -> None:
@@ -86,12 +84,12 @@ def test_queue_resolution_shifts_start() -> None:
     late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510, charge_duration = 60)])
     client = FakeClient([WaitInQueueTool()])
 
-    events = simulate([early, late], [node], client)["contention_events"]
+    events = resolve_contentions([early, late], [node], client, 0)
 
     assert len(events) == 1
     assert events[0].resolution == "queued"
     assert len(events[0].reasoning) == 1
-    assert late.schedule.blocks[0].charge_start_time == 540
+    assert late.schedules[0].blocks[0].charge_start_time == 540
 
 
 def test_queue_no_fit_relocates() -> None:
@@ -104,14 +102,14 @@ def test_queue_no_fit_relocates() -> None:
     ])
     client = FakeClient([WaitInQueueTool(), ReadjustChargeTool(node_id = other.id, charge_level = "L2", charge_start_hh_mm = "10:30")])
 
-    events = simulate([early, late], [node, other], client)["contention_events"]
+    events = resolve_contentions([early, late], [node, other], client, 0)
 
     assert len(events) == 1
     assert events[0].resolution == "relocated"
     assert len(events[0].reasoning) == 2
-    assert late.schedule.blocks[0].charge_level is None
-    assert late.schedule.blocks[1].charge_level == "L2"
-    assert late.schedule.blocks[1].charge_start_time == 630
+    assert late.schedules[0].blocks[0].charge_level is None
+    assert late.schedules[0].blocks[1].charge_level == "L2"
+    assert late.schedules[0].blocks[1].charge_start_time == 630
 
 
 def test_list_charge_stops_then_relocate() -> None:
@@ -124,13 +122,13 @@ def test_list_charge_stops_then_relocate() -> None:
     ])
     client = FakeClient([ListChargeStopsTool(), ReadjustChargeTool(node_id = other.id, charge_level = "L2", charge_start_hh_mm = "10:30")])
 
-    events = simulate([early, late], [node, other], client)["contention_events"]
+    events = resolve_contentions([early, late], [node, other], client, 0)
 
     assert len(events) == 1
     assert events[0].resolution == "relocated"
     assert len(events[0].reasoning) == 2
-    assert any(f"Node ID: {other.id}" in message["content"] for message in late.context if message["role"] == "user")
-    assert sum(1 for message in late.context if "Charger contention:" in message["content"]) == 1
+    assert any(f"Node ID: {other.id}" in message["content"] for message in late.contexts[0] if message["role"] == "user")
+    assert sum(1 for message in late.contexts[0] if "Charger contention:" in message["content"]) == 1
 
 
 def test_build_simulation_events() -> None:
@@ -140,7 +138,7 @@ def test_build_simulation_events() -> None:
         NodeBlock(node_id = node.id, start_time = 486, end_time = 660, charge_level = "L2", charge_start_time = 540, charge_duration = 60)
     ])
 
-    events = build_simulation_events([agent])
+    events = build_simulation_events([agent], 0)
     status_at = {event.time: event.statuses[0].status for event in events}
 
     assert status_at[480] == "traveling"

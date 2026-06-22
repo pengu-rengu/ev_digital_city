@@ -3,9 +3,11 @@ import dotenv
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from agent import Agent, NodeBlock, TravelBlock, Schedule, CHARGE_POWER_KW, level_ports
+from agent import Agent, NodeBlock, Schedule, CHARGE_POWER_KW, level_ports, DAY_NAMES, run_day, agent_from_persona_artifact, replay_soc
 from nodes import OsmNode, ChargerNode
+from personas import PersonaArtifact
 from profiles import hhmm_to_mins, mins_to_hhmm
+from roads import Road
 
 class ChargeSession(BaseModel):
     agent_index: int
@@ -31,10 +33,10 @@ class SimulationEvent(BaseModel):
 class ListChargeStopsTool(BaseModel):
     tool: Literal["list_charge_stops"] = "list_charge_stops"
 
-    def run(self, agent: Agent, nodes: list[OsmNode | ChargerNode]) -> str:
+    def run(self, schedule: Schedule, nodes: list[OsmNode | ChargerNode]) -> str:
         node_by_id = {node.id: node for node in nodes}
         text = ""
-        for block in agent.schedule.blocks:
+        for block in schedule.blocks:
             if not isinstance(block, NodeBlock):
                 continue
             node = node_by_id[block.node_id]
@@ -67,8 +69,8 @@ class ReadjustChargeTool(BaseModel):
     charge_level: Literal["L1", "L2", "DC"]
     charge_start_hh_mm: str
 
-    def run(self, agent: Agent, session: ChargeSession, nodes: list[OsmNode | ChargerNode]) -> str:
-        target = next((block for block in agent.schedule.blocks if isinstance(block, NodeBlock) and block.node_id == self.node_id), None)
+    def run(self, schedule: Schedule, session: ChargeSession, nodes: list[OsmNode | ChargerNode]) -> str:
+        target = next((block for block in schedule.blocks if isinstance(block, NodeBlock) and block.node_id == self.node_id), None)
         if target is None:
             raise ValueError(f"You do not visit node {self.node_id}; choose a stop already in your schedule")
 
@@ -112,11 +114,11 @@ class ChargeResolution(BaseModel):
 def session_end(block: NodeBlock) -> int:
     return block.charge_start_time + block.charge_duration
 
-def sessions_for(agents: list[Agent]) -> list[ChargeSession]:
+def sessions_for(agents: list[Agent], day_index: int) -> list[ChargeSession]:
     return [
         ChargeSession(agent_index = index, block = block)
         for index, agent in enumerate(agents)
-        for block in agent.schedule.blocks
+        for block in agent.schedules[day_index].blocks
         if isinstance(block, NodeBlock) and block.charge_level
     ]
 
@@ -150,23 +152,25 @@ def earliest_free(session: ChargeSession, sessions: list[ChargeSession], capacit
         return start
     return blockers[len(blockers) - capacity]
 
-def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, max_rounds: int = 100) -> list[ContentionEvent]:
+def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, day_index: int, max_rounds: int = 100) -> list[ContentionEvent]:
     events = []
     prompted = {}
     reasoning_traces = {}
     for _ in range(max_rounds):
-        sessions = sessions_for(agents)
+        sessions = sessions_for(agents, day_index)
         contended = first_contention(sessions, nodes)
         if contended is None:
             return events
 
         agent = agents[contended.agent_index]
+        context = agent.contexts[day_index]
+        schedule = agent.schedules[day_index]
         node_id = contended.block.node_id
         level = contended.block.charge_level
         charge_start = contended.block.charge_start_time
         if prompted.get(contended.agent_index) != (node_id, level, charge_start):
             charge_end = session_end(contended.block)
-            agent.context.append({
+            context.append({
                 "role": "user",
                 "content": (
                     f"Charger contention: all {level} ports at node {node_id} are taken during your charge window "
@@ -179,17 +183,17 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
             prompted[contended.agent_index] = (node_id, level, charge_start)
         response = client.responses.parse(
             model = "gpt-5.4-mini",
-            input = agent.context,
+            input = context,
             text_format = ChargeResolution
         )
         print(response.output_text, end = "\n\n\n")
-        agent.context.append({"role": "assistant", "content": response.output_text})
+        context.append({"role": "assistant", "content": response.output_text})
         action = response.output_parsed.action
         reasoning_traces.setdefault(contended.agent_index, []).append(response.output_parsed.thought)
 
         try:
             if isinstance(action, ListChargeStopsTool):
-                output = action.run(agent, nodes)
+                output = action.run(schedule, nodes)
             elif isinstance(action, WaitInQueueTool):
                 output = action.run(contended, sessions, nodes)
                 events.append(ContentionEvent(
@@ -201,7 +205,7 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
                     reasoning = reasoning_traces.pop(contended.agent_index)
                 ))
             elif isinstance(action, ReadjustChargeTool):
-                output = action.run(agent, contended, nodes)
+                output = action.run(schedule, contended, nodes)
                 events.append(ContentionEvent(
                     agent_index = contended.agent_index,
                     node_id = action.node_id,
@@ -224,12 +228,12 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
             output = str(error)
 
         print(output)
-        agent.context.append({"role": "user", "content": output})
+        context.append({"role": "user", "content": output})
 
     raise RuntimeError(f"charger contention unresolved within {max_rounds} rounds")
 
-def agent_status(agent: Agent, time: int) -> tuple[str, int | None]:
-    for block in agent.schedule.blocks:
+def agent_status(agent: Agent, day_index: int, time: int) -> tuple[str, int | None]:
+    for block in agent.schedules[day_index].blocks:
         if block.start_time <= time < block.end_time:
             if isinstance(block, NodeBlock):
                 if block.charge_level and block.charge_start_time <= time < block.charge_start_time + block.charge_duration:
@@ -238,79 +242,56 @@ def agent_status(agent: Agent, time: int) -> tuple[str, int | None]:
             return "traveling", None
     return "home", agent.home_node_id
 
-def build_simulation_events(agents: list[Agent]) -> list[SimulationEvent]:
-    starts = [block.start_time for agent in agents for block in agent.schedule.blocks]
-    ends = [block.end_time for agent in agents for block in agent.schedule.blocks]
+def build_simulation_events(agents: list[Agent], day_index: int) -> list[SimulationEvent]:
+    starts = [block.start_time for agent in agents for block in agent.schedules[day_index].blocks]
+    ends = [block.end_time for agent in agents for block in agent.schedules[day_index].blocks]
     events = []
     for time in range(min(starts), max(ends) + 1, 3):
         statuses = [
             AgentStatus(agent_index = index, status = status, node_id = node_id)
             for index, agent in enumerate(agents)
-            for status, node_id in [agent_status(agent, time)]
+            for status, node_id in [agent_status(agent, day_index, time)]
         ]
         events.append(SimulationEvent(time = time, statuses = statuses))
     return events
 
-def simulate(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, max_rounds: int = 100) -> dict:
-    contention_events = resolve_contentions(agents, nodes, client, max_rounds)
-    simulation_events = build_simulation_events(agents)
-    return {"contention_events": contention_events, "simulation_events": simulation_events}
+def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20, max_rounds: int = 100) -> list[dict]:
+    results = []
+    for day_index in range(7):
+        start_socs = [agent.soc_kwh for agent in agents]
+        for agent in agents:
+            agent.schedules.append(run_day(agent, day_index, agent.soc_kwh, nodes, roads, client, max_turns))
+        contention_events = resolve_contentions(agents, nodes, client, day_index, max_rounds)
+        for agent, start_soc in zip(agents, start_socs):
+            agent.soc_kwh = replay_soc(agent.schedules[day_index], start_soc, agent.battery_kwh)
+        simulation_events = build_simulation_events(agents, day_index)
+        results.append({"day": DAY_NAMES[day_index], "contention_events": contention_events, "simulation_events": simulation_events})
+    return results
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
     client = OpenAI()
 
-    with open("artifacts/agents.json") as file:
-        agents = [Agent.model_validate(agent) for agent in json.load(file)]
+    with open("artifacts/personas.json") as file:
+        artifact = PersonaArtifact.model_validate(json.load(file)[1])
     with open("artifacts/nodes.json") as file:
         nodes = [ChargerNode.model_validate(node) if node["category"] == "charger" else OsmNode.model_validate(node) for node in json.load(file)]
+    with open("artifacts/roads.json") as file:
+        roads = [Road.model_validate(road) for road in json.load(file)]
 
-    real_agent = agents[0]
-    gym_node_id = 312
-    office_node_id = 255
-    bank_node_id = 315
-    mock_a = Agent(
-        persona = "Mock driver: gym before work.",
-        archetype = real_agent.archetype,
-        day_type = "weekday",
-        schedule = Schedule(start_time = 340, blocks = [
-            TravelBlock(start_time = 340, end_time = 345, distance = 2.0),
-            NodeBlock(node_id = gym_node_id, start_time = 345, end_time = 410, charge_level = "L2", charge_start_time = 346, charge_duration = 60),
-            TravelBlock(start_time = 410, end_time = 425, distance = 5.0),
-            NodeBlock(node_id = office_node_id, start_time = 425, end_time = 1010),
-            TravelBlock(start_time = 1010, end_time = 1030, distance = 7.0)
-        ]),
-        context = [],
-        home_node_id = real_agent.home_node_id,
-        battery_kwh = 65.0,
-        start_soc_kwh = 40.0,
-        soc_kwh = 40.0
-    )
-    mock_b = Agent(
-        persona = "Mock driver: errand then gym then work.",
-        archetype = real_agent.archetype,
-        day_type = "weekday",
-        schedule = Schedule(start_time = 340, blocks = [
-            TravelBlock(start_time = 340, end_time = 350, distance = 4.0),
-            NodeBlock(node_id = bank_node_id, start_time = 350, end_time = 392),
-            TravelBlock(start_time = 392, end_time = 397, distance = 2.0),
-            NodeBlock(node_id = gym_node_id, start_time = 397, end_time = 470, charge_level = "L2", charge_start_time = 400, charge_duration = 60),
-            TravelBlock(start_time = 470, end_time = 485, distance = 5.0),
-            NodeBlock(node_id = office_node_id, start_time = 485, end_time = 1005),
-            TravelBlock(start_time = 1005, end_time = 1025, distance = 7.0)
-        ]),
-        context = [],
-        home_node_id = real_agent.home_node_id,
-        battery_kwh = 65.0,
-        start_soc_kwh = 40.0,
-        soc_kwh = 40.0
-    )
-
-    contending_agents = [real_agent, mock_a, mock_b]
-    result = simulate(contending_agents, nodes, client)
+    home_node_id = next(node.id for node in nodes if node.category == "house")
+    agents = [agent_from_persona_artifact(artifact, home_node_id)]
+    result = run_week(agents, nodes, roads, client)
 
     with open("artifacts/simulation_logs.json", "w") as file:
-        json.dump({
-            "contention_events": [event.model_dump() for event in result["contention_events"]],
-            "simulation_events": [event.model_dump() for event in result["simulation_events"]]
-        }, file, indent = 2)
+        json.dump([
+            {
+                "day": day["day"],
+                "contention_events": [event.model_dump() for event in day["contention_events"]],
+                "simulation_events": [event.model_dump() for event in day["simulation_events"]]
+            }
+            for day in result
+        ], file, indent = 2)
+
+    with open("artifacts/agents.json", "w") as file:
+        json.dump([json.loads(agent.model_dump_json()) for agent in agents], file, indent = 2)
