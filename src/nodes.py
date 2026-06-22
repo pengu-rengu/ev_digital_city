@@ -30,9 +30,20 @@ def fetch_place_zip() -> Path:
             file.write(chunk)
     return path
 
-def reston_boundary() -> BaseGeometry:
+# Compact convex cluster of dense Fairfax County CDPs (VDOT-maintained roads, no holes)
+AREA_GEOIDS = [
+    "5101912",  # Annandale
+    "5146760",  # Long Branch
+    "5149144",  # Mantua
+    "5151192",  # Merrifield
+    "5182371",  # Wakefield
+    "5184368",  # West Falls Church
+    "5187333"   # Woodburn
+]
+
+def area_boundary() -> BaseGeometry:
     places = gpd.read_file(f"zip://{fetch_place_zip()}").to_crs("EPSG:4326")
-    return places[places["GEOID"] == "5166672"].geometry.union_all()
+    return places[places["GEOID"].isin(AREA_GEOIDS)].geometry.union_all()
 
 node_id_counter = count()
 
@@ -194,13 +205,13 @@ def plot_nodes(boundary: BaseGeometry, nodes: list[ChargerNode | OsmNode]) -> No
     ax.set_aspect("equal")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title("Reston nodes")
+    ax.set_title("Fairfax County area nodes")
     fig.tight_layout()
     fig.savefig("artifacts/nodes_map.png", bbox_inches = "tight")
 
 if __name__ == "__main__":
     stations_df = pd.read_csv("data/alt_fuel_stations.csv", low_memory = False)
-    boundary = reston_boundary()
+    boundary = area_boundary()
     chargers = build_chargers(stations_df, boundary)
     osm_nodes = build_osm_nodes(PBF_PATH, boundary)
     independent_chargers = attach_chargers(osm_nodes, chargers)

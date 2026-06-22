@@ -28,9 +28,13 @@ def charging_agent(home_node_id: int, blocks: list[NodeBlock]) -> Agent:
         persona = "A commuter.",
         archetype = Archetype.FLEXIBLE_COMMUTER,
         attributes = Attributes(is_caregiver = False, mobility_level = MobilityLevel.MODERATE, work_arrangement = None, schedule_irregular = False),
+        day_type = "weekday",
         schedule = Schedule(start_time = 470, blocks = blocks),
         context = [],
-        home_node_id = home_node_id
+        home_node_id = home_node_id,
+        battery_kwh = 60.0,
+        start_soc_kwh = 60.0,
+        soc_kwh = 60.0
     )
 
 
@@ -59,8 +63,8 @@ class FakeClient:
 
 def test_detection_flags_latest_arrival() -> None:
     node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 1)])
-    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480)])
-    late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510)])
+    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
+    late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510, charge_duration = 60)])
 
     contended = first_contention(sessions_for([early, late]), [node])
 
@@ -70,16 +74,16 @@ def test_detection_flags_latest_arrival() -> None:
 
 def test_detection_clears_with_enough_ports() -> None:
     node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 2)])
-    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480)])
-    late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510)])
+    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
+    late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510, charge_duration = 60)])
 
     assert first_contention(sessions_for([early, late]), [node]) is None
 
 
 def test_queue_resolution_shifts_start() -> None:
     node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 1)])
-    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480)])
-    late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510)])
+    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
+    late = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 510, charge_duration = 60)])
     client = FakeClient([WaitInQueueTool()])
 
     events = simulate([early, late], [node], client)["contention_events"]
@@ -93,9 +97,9 @@ def test_queue_resolution_shifts_start() -> None:
 def test_queue_no_fit_relocates() -> None:
     node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 1)])
     other = OsmNode(category = "gym", metadata = {}, coords = (0.0, 0.02), chargers = [charger_node((0.0, 0.02), 1)])
-    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480)])
+    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
     late = charging_agent(node.id, [
-        NodeBlock(node_id = node.id, start_time = 470, end_time = 575, charge_level = "L2", charge_start_time = 510),
+        NodeBlock(node_id = node.id, start_time = 470, end_time = 575, charge_level = "L2", charge_start_time = 510, charge_duration = 60),
         NodeBlock(node_id = other.id, start_time = 600, end_time = 800)
     ])
     client = FakeClient([WaitInQueueTool(), ReadjustChargeTool(node_id = other.id, charge_level = "L2", charge_start_hh_mm = "10:30")])
@@ -113,9 +117,9 @@ def test_queue_no_fit_relocates() -> None:
 def test_list_charge_stops_then_relocate() -> None:
     node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 1)])
     other = OsmNode(category = "gym", metadata = {}, coords = (0.0, 0.02), chargers = [charger_node((0.0, 0.02), 1)])
-    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480)])
+    early = charging_agent(node.id, [NodeBlock(node_id = node.id, start_time = 470, end_time = 700, charge_level = "L2", charge_start_time = 480, charge_duration = 60)])
     late = charging_agent(node.id, [
-        NodeBlock(node_id = node.id, start_time = 470, end_time = 575, charge_level = "L2", charge_start_time = 510),
+        NodeBlock(node_id = node.id, start_time = 470, end_time = 575, charge_level = "L2", charge_start_time = 510, charge_duration = 60),
         NodeBlock(node_id = other.id, start_time = 600, end_time = 800)
     ])
     client = FakeClient([ListChargeStopsTool(), ReadjustChargeTool(node_id = other.id, charge_level = "L2", charge_start_hh_mm = "10:30")])
@@ -132,8 +136,8 @@ def test_list_charge_stops_then_relocate() -> None:
 def test_build_simulation_events() -> None:
     node = OsmNode(category = "office", metadata = {}, coords = (0.0, 0.01), chargers = [charger_node((0.0, 0.01), 1)])
     agent = charging_agent(99, [
-        TravelBlock(start_time = 480, end_time = 486),
-        NodeBlock(node_id = node.id, start_time = 486, end_time = 660, charge_level = "L2", charge_start_time = 540)
+        TravelBlock(start_time = 480, end_time = 486, distance = 2.0),
+        NodeBlock(node_id = node.id, start_time = 486, end_time = 660, charge_level = "L2", charge_start_time = 540, charge_duration = 60)
     ])
 
     events = build_simulation_events([agent])

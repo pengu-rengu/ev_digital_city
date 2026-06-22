@@ -3,31 +3,33 @@ import json
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from profiles import Profile, Archetype, hhmm_to_mins
+from profiles import Profile, Archetype
+from persona_data import DISPOSITIONS, SCENARIOS
 
-Activity = Literal["Home", "Work", "Volunteer", "School", "Shopping", "Meal (quick-stop)", "Meal", "Gas", "Health care", "Non-shopping errand", "Socialize", "Civic/Religious", "Exercise", "Recreation", "Entertainment", "Drop off/pick up", "Other"]
-
-class TripGuess(BaseModel):
-    origin_activity: Activity
-    dest_activity: Activity
-    departure_time: str
-    arrival_time: str
-
-class TrajectoryGuess(BaseModel):
+class ScenarioResponse(BaseModel):
     reasoning: str
-    trips: list[TripGuess]
+    action: Literal["A", "B", "C"]
 
-class Iteration(BaseModel):
+class RankingResult(BaseModel):
+    reasoning: str
+    ranking: list[int]
+
+class ScenarioRanking(BaseModel):
+    scenario: str
+    reasoning: str
+    ranking: list[int]
+
+class PersonaCandidate(BaseModel):
     persona: str
-    guesses: list[TrajectoryGuess]
-    final_score: float
-    reflection: str | None
+    disposition: str
+    actions: list[ScenarioResponse]
+    score: int
 
 class PersonaArtifact(BaseModel):
-    best_persona: str
-    best_score: float
+    personas: list[PersonaCandidate]
+    best_index: int
     target_profile: Profile
-    iterations: list[Iteration]
+    rankings: list[ScenarioRanking]
 
 def format_profile(profile: Profile) -> str:
     text = f"Age Group: {profile.age_group}\n"
@@ -39,7 +41,17 @@ def format_profile(profile: Profile) -> str:
         text += f"Student Status: {profile.student_status}\n"
     if profile.household_size:
         text += f"Household Size: {profile.household_size}\n"
-    
+    if profile.home_type:
+        text += f"Home Type: {profile.home_type}\n"
+    if profile.home_ownership:
+        text += f"Home Ownership: {profile.home_ownership}\n"
+    if profile.workplace_ev_charging is not None:
+        text += f"Workplace EV Charging: {'available' if profile.workplace_ev_charging else 'not available'}\n"
+    if profile.telecommute_days:
+        text += f"Telecommute Days: {profile.telecommute_days}\n"
+    if profile.commute_freq:
+        text += f"Commute Frequency: {profile.commute_freq}\n"
+
     text += "\nTrips:\n\n"
 
     for trip in profile.trips:
@@ -52,52 +64,66 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, client: OpenAI, last_persona: str | None, reflection: str | None) -> str:
-    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study.
-
-You will be given a Profile, which contains demographics and a list of trips taken on a single travel-diary day.
-Your persona must plausibly fit the target Profile. Make the person's routine and the rhythm of their day inferable from the persona.
+def generate_persona(profile: Profile, client: OpenAI, disposition: str) -> str:
+    system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day, along with a disposition: a short description of the person's general behavioral attitude — how they travel, run their day, and charge their EV. Your persona must plausibly fit the Profile and the disposition, and make the person's routine, day-to-day variation, and EV charging habits inferable.
 
 DON'T:
-Do not exactly restate the trip list. Do not produce time-stamped itineraries or hour-by-hour schedules.
-Do not exactly restate age group, household income, employment status, student status, or household size.
+- Do not restate the trip list, time-stamped itineraries, or hour-by-hour schedules.
+- Do not restate age group, household income, employment status, student status, or household size word for word.
+- Do not use the broad activity categories in the trip list, such as Work, Meal, or Shopping.
+- Do not lock the person into one fixed daily schedule; the trip list is one day out of many.
+- Do not assume home charging: this person has no home charging and only charges away from home.
+- Do not state exact kWh, exact battery percentages at exact times, or a fixed charging schedule.
+- Do not use "probably", "likely", or "suggests". State tendencies as a fact.
 
 DO:
-Do provide general demographics that would help infer this person's trip schedule
-Do provide time windows (e.g. early morning, late afternoon), along with a real world explanation
-Do provide activities the person usually does, along with a real world explanation
+- Do give general demographics that help infer the person's trip schedule.
+- Do give time windows, such as early morning or late afternoon, and usual activities, each with a real-world reason.
+- Do go into detail for the activities instead of leaving them as broad categories
+- Do separate anchor activities, such as work, or school pickup from loose discretionary activities, such as gym, errands, meals.
+- Do give frequencies, tendencies, and conditional day-to-day variation, not single occurrences.
+- Do ensure the persona describes both weekday and weekend behavior, since the person's routine differs between the two.
+- Do give preferences and trade-offs so the person's choices can be inferred in new situations.
+- Do convey away-from-home EV charging behavior: where they plug in, how low they let the battery get, fast DC vs slower port, how they react to a busy charger, and price sensitivity.
 
 EXAMPLES:
 
 Bad: He leaves the house at 6:30 am
-Good: He gets up very early in the morning to avoid traffic
+Good: He gets up very early in the morning to avoid traffic, except on days where he works remote
 
 Bad: She has a pick-up trip at 3:30 pm
-Good: She pick ups her kids from school in the mid-afternoon, around when school typically ends
+Good: She usually picks up her kids from a nearby elementary school in the mid-afternoon, around when school typically ends. Every Wednesday, however, she instead pick ups her kids from soccer practice in the early evening.
 
 Bad: He takes a break from work and goes to a fast food restaurant around 12:30 pm
-Good: He does not like cooking at home and values convenience, especially for lunch
+Good: He does not like cooking at home and values convenience, especially for lunch, although he is still willing to cook for special occasions.
 
-This information is evidence about the person, not the persona itself.
-Be confident in your claims. Do not use words like "probably", "likely", or "suggests".
+Bad: Some days he skips the gym
+Good: Some days he skips the lifing weights when work runs long
+
+Bad: She goes to the gym in the morning
+Good: She goes swimming at the gym's indoor pool in the morning during the weekdays. However, occasionally the pool is closed, in which case she stays at home.
+
+Bad: He charges to 80% at 2:15 pm
+Good: He tops up while already stopped for an errand and avoids letting the battery get too low
+
+Bad: She charges every day right after work
+Good: On long-driving days she seeks out a fast charger; most days she charges while running errands
+
+Bad: He eats a meal for dinner after shopping
+Good: He brings his family to the grocery store every Saturday, and afterwards they eat dinner at a Chinese restaurant.
+
+Bad: He goes to a healthcare location in the evening
+Good: He picks up his medicine from the pharmacy on the first of every month
 """
 
-    if last_persona is not None:
-        system_prompt += f"""
-Your previous persona attempt is below, along with guidance on how to improve it. Produce a better persona that applies the guidance, keeping what worked and fixing what the guidance points out.
-
-Previous persona:
-{last_persona}
-
-Guidance:
-{reflection}
-"""
-    
     profile_str = format_profile(profile)
     user_prompt = f"""Profile:
 {profile_str}
 
-Generate one persona from this profile."""
+Disposition:
+{disposition}
+
+Generate one persona from this profile and disposition"""
 
     response = client.responses.create(
         model = "gpt-5.4-mini",
@@ -109,22 +135,16 @@ Generate one persona from this profile."""
     print(response.output_text, end = "\n\n\n")
     return response.output_text
 
-def within_tolerance(guess: str, actual: str, tolerance: int = 30) -> bool:
-    return abs(hhmm_to_mins(guess) - hhmm_to_mins(actual)) <= tolerance
-
-def guess_trajectory(target: Profile, persona: str, client: OpenAI) -> tuple[TrajectoryGuess, float]:
-    num_trips = len(target.trips)
-
+def answer_scenario(persona: str, scenario: str, client: OpenAI) -> ScenarioResponse:
     system_prompt = f"""You are the following persona. Stay fully in character as this person.
 
 Persona:
 {persona}
 
-You took {num_trips} trips on your travel-diary day. Reconstruct them in order. For each trip, give the origin activity, destination activity, departure time (HH:MM), and arrival time (HH:MM).
+You drive an electric vehicle and have no way to charge at home, so any charging you do happens away from home during the day.
 
-Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (quick-stop), Meal, Gas, Health care, Non-shopping errand, Socialize, Civic/Religious, Exercise, Recreation, Entertainment, Drop off/pick up, Other."""
-    
-    user_prompt = f"Reconstruct your {num_trips} trips."
+You will be given a situation about your travel, charging, or daily life, with options A, B, and C. Choose exactly one option as your action and explain why in character. Narrate the reasoning in first-person, not as a third party."""
+    user_prompt = scenario
 
     response = client.responses.parse(
         model = "gpt-5.4-mini",
@@ -132,103 +152,86 @@ Each activity must be one of: Home, Work, Volunteer, School, Shopping, Meal (qui
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        text_format = TrajectoryGuess
+        text_format = ScenarioResponse
     )
     print(response.output_parsed, end = "\n\n\n")
-    guess = response.output_parsed
+    return response.output_parsed
 
-    hits = 0
-    for guessed, actual in zip(guess.trips, target.trips):
-        hits += guessed.origin_activity == actual.origin_activity
-        hits += guessed.dest_activity == actual.dest_activity
-        hits += within_tolerance(guessed.departure_time, actual.departure_time)
-        hits += within_tolerance(guessed.arrival_time, actual.arrival_time)
-
-    score = hits / (4 * num_trips)
-    return guess, score
-
-def score_persona(target: Profile, persona: str, client: OpenAI, num_guesses: int = 3) -> tuple[list[TrajectoryGuess], TrajectoryGuess, float]:
-    attempts = [guess_trajectory(target, persona, client) for _ in range(num_guesses)]
-    guesses = [guess for guess, _ in attempts]
-    final_score = sum(score for _, score in attempts) / num_guesses
-    worst_guess = min(attempts, key = lambda attempt: attempt[1])[0]
-    return guesses, worst_guess, final_score
-
-def reflect(target: Profile, persona: str, guess: TrajectoryGuess, client: OpenAI) -> str:
-    guess_text = "\n\n".join(
-        f"Trip {i + 1}:\nDeparture Time: {trip.departure_time}\nArrival Time: {trip.arrival_time}\nOrigin Activity: {trip.origin_activity}\nDestination Activity: {trip.dest_activity}"
-        for i, trip in enumerate(guess.trips)
+def rank_personas(profile: Profile, scenario: str, responses: list[ScenarioResponse], client: OpenAI) -> RankingResult:
+    profile_str = format_profile(profile)
+    responses_text = "\n".join(
+        f"Person {index + 1} chose option {response.action}.\nPerson {index + 1} reasoning:\n{response.reasoning}\n"
+        for index, response in enumerate(responses)
     )
+    system_prompt = """You are a travel-behavior and EV charging expert. Several people each describe how they would handle the same situation. Rank them from most to least realistic for the actual person described in the Profile, given who they are and how they live.
 
-    system_prompt = """You are improving a persona used in a travel-behavior study. Someone role-playing the persona tried to reconstruct the person's real trips (which activities they went to and roughly when) and produced a guess. You are given the persona, that guess, and the person's actual trips.
+Assume no one has access to home charging. Treat any action or reasoning that relies on, assumes, or falls back to home charging as unrealistic.
 
-Explain concretely how the persona should be revised so a reader reconstructs the trips more accurately: which activities and timing the persona fails to convey, and how it should make the more inferable.
+From the person's demographics, trips, and charging access, reason through what a real person like this would most plausibly do. Penalize choices inconsistent with their schedule, household, and budget, as well as ignoring charger availability/contention, level-vs-time mismatches (expecting a full charge in a short stop), economically irrational choices, and any reliance on home charging.
 
-Do not restate or quote the actual profile or trip values. Give guidance about what the persona should convey, not the answers themselves."""
+Give your reasoning and the ranking as a list of person numbers from most to least realistic (e.g. [2, 1, 3, 5, 4]). Include every person exactly once."""
+    user_prompt = f"""Profile:
+{profile_str}
 
-    target_str = format_profile(target)
-    user_prompt = f"""Persona:
-{persona}
+Scenario:
+{scenario}
 
-Reconstruction guess:
-{guess_text}
+{responses_text}
+Rank the people."""
 
-Actual:
-{target_str}
-
-How should the persona be improved?"""
-
-    response = client.responses.create(
+    result = client.responses.parse(
         model = "gpt-5.4-mini",
-        reasoning = {
-            "effort": "medium",
-            "summary": "auto"
-        },
+        reasoning = {"effort": "high"},
         input = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
-        ]
+        ],
+        text_format = RankingResult
     )
-    print(response.output_text, end="\n\n\n")
-    return response.output_text
+    print(result.output_parsed, end = "\n\n\n")
+    return result.output_parsed
 
-def refine_persona(target: Profile, client: OpenAI, threshold: float = 1.0, max_iterations: int = 5) -> PersonaArtifact:
-    best_persona: str | None = None
-    best_score = float("-inf")
-    last_persona: str | None = None
-    reflection: str | None = None
-    iterations: list[Iteration] = []
+def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
+    dispositions = DISPOSITIONS[target.archetype]
+    scenarios = SCENARIOS[target.archetype]
+    personas = [generate_persona(target, client, disposition) for disposition in dispositions]
+    n_samples = len(personas)
+    actions = [[answer_scenario(persona, scenario, client) for scenario in scenarios] for persona in personas]
 
-    for iteration in range(max_iterations):
-        persona = generate_persona(target, client, last_persona, reflection)
-        guesses, worst_guess, final_score = score_persona(target, persona, client)
-        print(f"Iteration {iteration}: final={final_score:.2f}")
+    scores = [0] * n_samples
+    rankings: list[ScenarioRanking] = []
 
-        if final_score > best_score:
-            best_score = final_score
-            best_persona = persona
+    for index in range(len(scenarios)):
+        responses = [actions[persona_index][index] for persona_index in range(n_samples)]
+        result = rank_personas(target, scenarios[index], responses, client)
+        order = [label - 1 for label in result.ranking]
+        if sorted(order) != list(range(n_samples)):
+            raise ValueError(f"Ranking {result.ranking} is not a permutation of 1..{n_samples}")
+        for position, persona_index in enumerate(order):
+            scores[persona_index] += n_samples - 1 - position
+        rankings.append(ScenarioRanking(
+            scenario = scenarios[index],
+            reasoning = result.reasoning,
+            ranking = order
+        ))
 
-        reflection = None
-        if final_score < threshold and iteration < max_iterations - 1:
-            reflection = reflect(target, persona, worst_guess, client)
-            last_persona = persona
-
-        new_iteration = Iteration(
-            persona = persona,
-            guesses = guesses,
-            final_score = final_score,
-            reflection = reflection
+    candidates = [
+        PersonaCandidate(
+            persona = personas[persona_index],
+            disposition = dispositions[persona_index],
+            actions = actions[persona_index],
+            score = scores[persona_index]
         )
-        iterations.append(new_iteration)
-
-        if final_score >= threshold:
-            break
+        for persona_index in range(n_samples)
+    ]
+    best_index = max(range(n_samples), key = lambda persona_index: scores[persona_index])
+    print(f"Best persona {best_index}: score={candidates[best_index].score}")
 
     return PersonaArtifact(
-        best_persona = best_persona,
-        best_score = best_score,
+        personas = candidates,
+        best_index = best_index,
         target_profile = target,
-        iterations = iterations
+        rankings = rankings
     )
 
 if __name__ == "__main__":
@@ -246,10 +249,13 @@ if __name__ == "__main__":
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
     
-    target = [profile for profile in profiles if profile.archetype == Archetype.FLEXIBLE_COMMUTER][0]
-    artifact = refine_persona(target, client = client)
-    print(artifact.best_persona)
-    print(f"Final score: {artifact.best_score:.2f}")
+    artifacts = []
+    for archetype in Archetype:
+        target = [profile for profile in profiles if profile.archetype == archetype][0]
+        artifact = generate_best_persona(target, client)
+        best = artifact.personas[artifact.best_index]
+        print(f"{archetype.value} best persona {artifact.best_index}: score={best.score}")
+        artifacts.append(json.loads(artifact.model_dump_json()))
 
     with open("artifacts/personas.json", "w") as file:
-        json.dump([json.loads(artifact.model_dump_json())], file, indent = 2)
+        json.dump(artifacts, file, indent = 2)

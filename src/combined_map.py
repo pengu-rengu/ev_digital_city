@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from shapely.geometry import Point, LineString
 from shapely.geometry.base import BaseGeometry
 
-from nodes import reston_boundary
+from nodes import area_boundary
 
 def load_node_frame() -> gpd.GeoDataFrame:
     with open("artifacts/nodes.json") as file:
@@ -33,10 +33,10 @@ def plot_combined(boundary: BaseGeometry, node_frame: gpd.GeoDataFrame, road_fra
     ax.set_aspect("equal")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title("Reston nodes and roads")
+    ax.set_title("Fairfax County area nodes and roads")
     fig.tight_layout()
     fig.savefig("artifacts/combined_map.png", bbox_inches = "tight")
 
 if __name__ == "__main__":
-    boundary = reston_boundary()
+    boundary = area_boundary()
     plot_combined(boundary, load_node_frame(), load_road_frame())
