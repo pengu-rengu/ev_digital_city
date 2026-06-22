@@ -8,7 +8,7 @@ from typing import Literal
 from openai import OpenAI
 from personas import PersonaArtifact, format_profile
 from pydantic import BaseModel
-from profiles import Archetype, Attributes, Profile, hhmm_to_mins, mins_to_hhmm
+from profiles import Archetype, Profile, hhmm_to_mins, mins_to_hhmm
 from nodes import OsmNode, ChargerNode
 from roads import Road
 from shapely.geometry import LineString, MultiPoint, Point
@@ -84,7 +84,6 @@ class Agent(BaseModel):
     persona: str
     profile: Profile | None = None
     archetype: Archetype
-    attributes: Attributes
     day_type: Literal["weekday", "weekend"]
     schedule: Schedule
     context: list[dict]
@@ -100,7 +99,6 @@ def agent_from_persona_artifact(persona_artifact: PersonaArtifact, home_node_id:
         persona = persona_artifact.personas[persona_artifact.best_index].persona,
         profile = persona_artifact.target_profile,
         archetype = persona_artifact.target_profile.archetype,
-        attributes = persona_artifact.target_profile.attributes,
         day_type = day_type,
         schedule = Schedule(
             start_time = None,
@@ -447,6 +445,34 @@ class AgentAction(BaseModel):
     thought: str
     action: SearchNodesTool | DistanceTimeToNodeTool | SetStartTimeTool | AppendToScheduleTool | ResetScheduleTool | FinishTool
 
+def schedule_violations(agent: Agent, nodes: list[OsmNode | ChargerNode]) -> list[str]:
+    category_by_id = {node.id: node.category for node in nodes}
+    stop_categories = [category_by_id.get(block.node_id, "") for block in agent.schedule.blocks if isinstance(block, NodeBlock)]
+    has_office = "office" in stop_categories
+    has_school = "school" in stop_categories
+    other_count = sum(1 for category in stop_categories if category not in ("house", "office"))
+    is_weekday = agent.day_type == "weekday"
+    violations: list[str] = []
+
+    if agent.archetype == Archetype.NON_COMMUTER:
+        if has_office:
+            violations.append("As a Non-Commuter you do not commute to work — remove the office stop.")
+    elif agent.archetype == Archetype.PARENT_COMMUTER:
+        if is_weekday and not has_office:
+            violations.append("As a Parent Commuter your weekday must include a work (office) stop.")
+        if is_weekday and not has_school:
+            violations.append("As a Parent Commuter your weekday must include a school drop-off/pick-up stop.")
+    elif agent.archetype == Archetype.RIGID_COMMUTER:
+        if is_weekday and not has_office:
+            violations.append("As a Rigid Commuter your weekday must include a work (office) stop.")
+        if is_weekday and other_count > 1:
+            violations.append("As a Rigid Commuter you keep a tight routine — limit yourself to at most one non-work stop.")
+    elif agent.archetype == Archetype.FLEXIBLE_COMMUTER:
+        if is_weekday and not has_office:
+            violations.append("As a Flexible Commuter your weekday should include a work (office) stop.")
+
+    return violations
+
 def current_node_id(agent: Agent) -> int:
     for block in reversed(agent.schedule.blocks):
         if isinstance(block, NodeBlock):
@@ -454,7 +480,6 @@ def current_node_id(agent: Agent) -> int:
     return agent.home_node_id
 
 def build_system_prompt(agent: Agent, use_profile: bool = False) -> str:
-    work_arrangement = agent.attributes.work_arrangement.value if agent.attributes.work_arrangement else "Unknown"
     if use_profile:
         intro = f"Profile:\n{format_profile(agent.profile)}\n"
     else:
@@ -464,10 +489,6 @@ def build_system_prompt(agent: Agent, use_profile: bool = False) -> str:
 {intro}
 
 Archetype: {agent.archetype.value}
-Caregiver: {agent.attributes.is_caregiver}
-Mobility: {agent.attributes.mobility_level.value}
-Work Arrangement: {work_arrangement}
-Irregular Schedule: {agent.attributes.schedule_irregular}
 
 Today is a {agent.day_type}. Your routine differs between weekdays and weekends, so plan the day that fits a typical {agent.day_type} for this person.
 You start and end the day at your home (node id {agent.home_node_id}).
@@ -506,6 +527,10 @@ def run_agent(agent: Agent, nodes: list[OsmNode | ChargerNode], roads: list[Road
         agent.context.append({"role": "assistant", "content": response.output_text})
         action = response.output_parsed.action
         if isinstance(action, FinishTool):
+            violations = schedule_violations(agent, nodes)
+            if violations:
+                agent.context.append({"role": "user", "content": " ".join(violations) + " Adjust your schedule, then call finish again."})
+                continue
             home_trip = next((block for block in reversed(agent.schedule.blocks) if isinstance(block, TravelBlock)), None)
             home_trip_energy = home_trip.distance * CONSUMPTION_KWH_PER_MI if home_trip else 0.0
             if agent.soc_kwh - home_trip_energy <= 0:

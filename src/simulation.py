@@ -272,7 +272,6 @@ if __name__ == "__main__":
     mock_a = Agent(
         persona = "Mock driver: gym before work.",
         archetype = real_agent.archetype,
-        attributes = real_agent.attributes,
         day_type = "weekday",
         schedule = Schedule(start_time = 340, blocks = [
             TravelBlock(start_time = 340, end_time = 345, distance = 2.0),
@@ -290,7 +289,6 @@ if __name__ == "__main__":
     mock_b = Agent(
         persona = "Mock driver: errand then gym then work.",
         archetype = real_agent.archetype,
-        attributes = real_agent.attributes,
         day_type = "weekday",
         schedule = Schedule(start_time = 340, blocks = [
             TravelBlock(start_time = 340, end_time = 350, distance = 4.0),

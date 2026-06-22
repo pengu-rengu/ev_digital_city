@@ -13,22 +13,6 @@ class Archetype(Enum):
     FLEXIBLE_COMMUTER = "Flexible Commuter"
     RIGID_COMMUTER = "Rigid Commuter"
 
-class MobilityLevel(Enum):
-    LOW = "Low Mobility"
-    MODERATE = "Moderate Mobility"
-    HIGH = "High Mobility"
-
-class WorkArrangement(Enum):
-    IN_PERSON = "In-Person"
-    HYBRID = "Hybrid"
-    REMOTE = "Remote"
-
-class Attributes(BaseModel):
-    is_caregiver: bool
-    mobility_level: MobilityLevel
-    work_arrangement: WorkArrangement | None
-    schedule_irregular: bool
-
 class Vehicle(BaseModel):
     fuel_type: str | None
     body_type: str | None
@@ -48,7 +32,6 @@ class Trip(BaseModel):
 
 class Profile(BaseModel):
     archetype: Archetype
-    attributes: Attributes
     age_group: str
     household_income: str
     employment_status: str | None
@@ -105,81 +88,21 @@ def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles
         trips.append(trip)
     return trips
 
-def classify_archetype(trips: list[Trip], attributes: Attributes) -> Archetype:
+def classify_archetype(trips: list[Trip], is_caregiver: bool) -> Archetype:
     has_work = any(trip.dest_activity == "Work" for trip in trips)
     if not has_work:
         return Archetype.NON_COMMUTER
     has_parent_trip = any(trip.dest_activity in ("Drop off/pick up", "School") for trip in trips)
-    if attributes.is_caregiver and has_parent_trip:
+    if is_caregiver and has_parent_trip:
         return Archetype.PARENT_COMMUTER
     other_count = sum(1 for trip in trips if trip.dest_activity not in ("Home", "Work"))
     if other_count >= 2:
         return Archetype.FLEXIBLE_COMMUTER
     return Archetype.RIGID_COMMUTER
 
-def irregular_schedule_person_ids(rows: pd.DataFrame, trip_df: pd.DataFrame) -> set[int]:
-
-    person_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
-    work_trips = person_trips[(person_trips["O_ACTIVITY"] == 2) | (person_trips["D_ACTIVITY"] == 2)].copy()
-    work_trips["dep_time"] = work_trips["DEPARTURE_TIME_HHMM"].map(hhmm_to_mins)
-    work_trips["arr_time"] = work_trips["ARRIVAL_TIME_HHMM"].map(hhmm_to_mins)
-
-    departure_mean = work_trips["dep_time"].mean()
-    departure_std = work_trips["dep_time"].std()
-
-    arrival_mean = work_trips["arr_time"].mean()
-    arrival_std = work_trips["arr_time"].std()
-
-    dep_z_score = (work_trips["dep_time"] - departure_mean) / departure_std
-    arr_z_score = (work_trips["arr_time"] - arrival_mean) / arrival_std
-
-    return set(work_trips[(dep_z_score.abs() > 2.0) | (arr_z_score.abs() > 2.0)]["PERSON_ID"])
-
-def top_bottom_miles(rows: pd.DataFrame, trip_df: pd.DataFrame) -> tuple[set[int], set[int]]:
-    person_trips = trip_df[trip_df["PERSON_ID"].isin(rows["PERSON_ID"])]
-    miles_per_person = person_trips.groupby("PERSON_ID", as_index = False)["DISTANCE"].sum()
-
-    top_cutoff = miles_per_person["DISTANCE"].quantile(0.75)
-    bottom_cutoff = miles_per_person["DISTANCE"].quantile(0.25)
-
-    top_ids = set(miles_per_person[miles_per_person["DISTANCE"] >= top_cutoff]["PERSON_ID"])
-    bottom_ids = set(miles_per_person[miles_per_person["DISTANCE"] <= bottom_cutoff]["PERSON_ID"])
-
-    return top_ids, bottom_ids
-
-def build_attributes(row: NamedTuple, caregiving_household_ids: set[int], top_miles_ids: set[int], bottom_miles_ids: set[int], irregular_person_ids: set[int],) -> Attributes:
-    is_caregiver = row.HOUSEHOLD_ID in caregiving_household_ids
-    schedule_irregular = row.PERSON_ID in irregular_person_ids
-
-    if row.PERSON_ID in bottom_miles_ids:
-        mobility_level = MobilityLevel.LOW
-    elif row.PERSON_ID in top_miles_ids:
-        mobility_level = MobilityLevel.HIGH
-    else:
-        mobility_level = MobilityLevel.MODERATE
-
-    work_arrangement: WorkArrangement | None = None
-    if row.EMPLOYMENT_STATUS == 0:
-        days = row.J1_TELECOMMUTE_DAYS
-        if days == 5 or row.J1_WORKPLACE_LOC == 3:
-            work_arrangement = WorkArrangement.REMOTE
-        elif days == -9 or days == 0:
-            work_arrangement = WorkArrangement.IN_PERSON
-        else:
-            work_arrangement = WorkArrangement.HYBRID
-
-    return Attributes(
-        is_caregiver = is_caregiver,
-        mobility_level = mobility_level,
-        work_arrangement = work_arrangement,
-        schedule_irregular = schedule_irregular,
-    )
-
 def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataFrame, tpb_centroids: dict[int, tuple[float, float]], bmc_centroids: dict[int, tuple[float, float]]) -> list[Profile]:
     vehicles = vehicle_lookup(vehicle_df)
     caregiving_household_ids = set(df[(df["AGE"] < 18) & (df["LICENSE"] != 1)]["HOUSEHOLD_ID"])
-    top_miles_ids, bottom_miles_ids = top_bottom_miles(df, trip_df)
-    irregular_person_ids = irregular_schedule_person_ids(df, trip_df)
 
     profiles = []
     for row in df.itertuples(index = False):
@@ -190,12 +113,10 @@ def build_profiles(df: pd.DataFrame, trip_df: pd.DataFrame, vehicle_df: pd.DataF
         if not trips:
             continue
         
-        attributes = build_attributes(row, caregiving_household_ids, top_miles_ids, bottom_miles_ids, irregular_person_ids)
-        archetype = classify_archetype(trips, attributes)
+        archetype = classify_archetype(trips, row.HOUSEHOLD_ID in caregiving_household_ids)
 
         profile = Profile(
             archetype = archetype,
-            attributes = attributes,
             age_group = AGE_GROUP_LABELS[row.AGE_GROUP],
             household_income = INCOME_LABELS[row.HH_INCOME_DETAILED],
             employment_status = EMPLOYMENT_LABELS[row.EMPLOYMENT_STATUS],
@@ -225,7 +146,7 @@ def mins_to_hhmm(mins: float) -> str:
     total = int(round(mins))
     return f"{total // 60:02d}:{total % 60:02d}"
 
-EXCLUDED_FIELDS = {"archetype", "attributes", "trips"}
+EXCLUDED_FIELDS = {"archetype", "trips"}
 EV_FUEL_TYPES = {"Electric", "Plug-in Hybrid"}
 
 def profiles_to_df(profiles: list[Profile]) -> pd.DataFrame:
