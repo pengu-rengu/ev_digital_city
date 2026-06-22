@@ -1,0 +1,5 @@
+archetype,AM_commute_lag_min,AM_n,PM_commute_lag_min,PM_n
+Parent Commuter,30.0,4231,20.000000000000036,5108
+Non-Commuter,24.999999999999964,648,15.0,12591
+Flexible Commuter,25.00000000000007,3608,15.0,4611
+Rigid Commuter,30.0,7320,30.0,7833
