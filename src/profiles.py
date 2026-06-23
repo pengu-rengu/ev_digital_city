@@ -24,6 +24,7 @@ class Trip(BaseModel):
     distance: float
     departure_time: str
     arrival_time: str
+    dest_dwell_time: float | None
     vehicle: Vehicle | None
     travelers_total: int
     travel_mode: str | None
@@ -79,6 +80,7 @@ def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles
             distance = row.DISTANCE,
             departure_time = row.DEPARTURE_TIME_HHMM,
             arrival_time = row.ARRIVAL_TIME_HHMM,
+            dest_dwell_time = None,
             vehicle = vehicle,
             travelers_total = row.TRAVELERS_TOTAL,
             travel_mode = TRAVEL_MODE_LABELS[row.TRAVEL_MODE],
@@ -86,6 +88,8 @@ def trips_for(person_id: int, household_id: int, trip_df: pd.DataFrame, vehicles
             dest_coords = dest_coords,
         )
         trips.append(trip)
+    for index in range(len(trips) - 1):
+        trips[index].dest_dwell_time = hhmm_to_mins(trips[index + 1].departure_time) - hhmm_to_mins(trips[index].arrival_time)
     return trips
 
 def classify_archetype(trips: list[Trip], is_caregiver: bool) -> Archetype:

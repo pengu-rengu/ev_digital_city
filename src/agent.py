@@ -512,7 +512,6 @@ If you make a mistake, call reset_schedule to clear your schedule and start over
 
 def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Schedule:
     day_name = DAY_NAMES[day_index]
-    is_weekday = day_index < 5
     schedule = Schedule(start_time = None, blocks = [])
     system_prompt = build_system_prompt(agent, day_name, nodes)
     print(system_prompt)
@@ -533,6 +532,7 @@ def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmN
         context.append({"role": "assistant", "content": response.output_text})
         action = response.output_parsed.action
         if isinstance(action, FinishTool):
+            is_weekday = day_index < 5
             violations = schedule_violations(schedule, agent.archetype, is_weekday, nodes)
             if violations:
                 context.append({"role": "user", "content": " ".join(violations) + " Adjust your schedule, then call finish again."})

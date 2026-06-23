@@ -60,7 +60,10 @@ def format_profile(profile: Profile) -> str:
         text += f"Origin Activity: {trip.origin_activity}\n"
         text += f"Destination Activity: {trip.dest_activity}\n"
         text += f"Travel Distance: {trip.distance} miles\n"
-        text += f"Travel Time: {trip.travel_time} minutes\n\n"
+        text += f"Travel Time: {trip.travel_time} minutes\n"
+        if trip.dest_dwell_time is not None:
+            text += f"Dwell Time: {trip.dest_dwell_time} minutes\n"
+        text += "\n"
 
     return text
 
@@ -194,30 +197,32 @@ Rank the people."""
 def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
     dispositions = DISPOSITIONS[target.archetype]
     scenarios = SCENARIOS[target.archetype]
-    personas = [generate_persona(target, client, disposition) for disposition in dispositions]
-    n_samples = len(personas)
-    actions = [[answer_scenario(persona, scenario, client) for scenario in scenarios] for persona in personas]
+    candidates = [generate_persona(target, client, disposition) for disposition in dispositions]
+    n_samples = len(candidates)
+    actions = [[answer_scenario(persona, scenario, client) for scenario in scenarios] for persona in candidates]
 
     scores = [0] * n_samples
     rankings: list[ScenarioRanking] = []
 
-    for index in range(len(scenarios)):
-        responses = [actions[persona_index][index] for persona_index in range(n_samples)]
-        result = rank_personas(target, scenarios[index], responses, client)
+    for i in range(len(scenarios)):
+        responses = [actions[persona_index][i] for persona_index in range(n_samples)]
+        result = rank_personas(target, scenarios[i], responses, client)
         order = [label - 1 for label in result.ranking]
         if sorted(order) != list(range(n_samples)):
             raise ValueError(f"Ranking {result.ranking} is not a permutation of 1..{n_samples}")
+        
         for position, persona_index in enumerate(order):
             scores[persona_index] += n_samples - 1 - position
+        
         rankings.append(ScenarioRanking(
-            scenario = scenarios[index],
+            scenario = scenarios[i],
             reasoning = result.reasoning,
             ranking = order
         ))
 
     candidates = [
         PersonaCandidate(
-            persona = personas[persona_index],
+            persona = candidates[persona_index],
             disposition = dispositions[persona_index],
             actions = actions[persona_index],
             score = scores[persona_index]
