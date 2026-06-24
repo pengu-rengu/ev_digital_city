@@ -1,10 +1,12 @@
 import dotenv
 import json
+import os
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
-from profiles import Profile, Archetype
+from profiles import Profile
 from persona_data import DISPOSITIONS, SCENARIOS
+from llm import call_llm
 
 class ScenarioResponse(BaseModel):
     reasoning: str
@@ -128,15 +130,12 @@ Disposition:
 
 Generate one persona from this profile and disposition"""
 
-    response = client.responses.create(
-        model = "gpt-5.4-mini",
-        input = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-    )
-    print(response.output_text, end = "\n\n\n")
-    return response.output_text
+    text = call_llm(client, [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ])
+    print(text, end = "\n\n\n")
+    return text
 
 def answer_scenario(persona: str, scenario: str, client: OpenAI) -> ScenarioResponse:
     system_prompt = f"""You are the following persona. Stay fully in character as this person.
@@ -149,16 +148,12 @@ You drive an electric vehicle and have no way to charge at home, so any charging
 You will be given a situation about your travel, charging, or daily life, with options A, B, and C. Choose exactly one option as your action and explain why in character. Narrate the reasoning in first-person, not as a third party."""
     user_prompt = scenario
 
-    response = client.responses.parse(
-        model = "gpt-5.4-mini",
-        input = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        text_format = ScenarioResponse
-    )
-    print(response.output_parsed, end = "\n\n\n")
-    return response.output_parsed
+    result = call_llm(client, [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ], schema = ScenarioResponse)
+    print(result, end = "\n\n\n")
+    return result
 
 def rank_personas(profile: Profile, scenario: str, responses: list[ScenarioResponse], client: OpenAI) -> RankingResult:
     profile_str = format_profile(profile)
@@ -182,35 +177,33 @@ Scenario:
 {responses_text}
 Rank the people."""
 
-    result = client.responses.parse(
-        model = "gpt-5.4-mini",
-        reasoning = {"effort": "high"},
-        input = [
+    while True:
+        result = call_llm(client, [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
-        ],
-        text_format = RankingResult
-    )
-    print(result.output_parsed, end = "\n\n\n")
-    return result.output_parsed
+        ], schema = RankingResult, reasoning = {"effort": "high"})
+        if sorted(label - 1 for label in result.ranking) == list(range(len(responses))):
+            print(result, end = "\n\n\n")
+            return result
 
 def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
     dispositions = DISPOSITIONS[target.archetype]
     scenarios = SCENARIOS[target.archetype]
+    print(f"  generating {len(dispositions)} candidate personas...")
     candidates = [generate_persona(target, client, disposition) for disposition in dispositions]
     n_samples = len(candidates)
+    print(f"  answering {len(scenarios)} scenarios across {n_samples} candidates...")
     actions = [[answer_scenario(persona, scenario, client) for scenario in scenarios] for persona in candidates]
 
     scores = [0] * n_samples
     rankings: list[ScenarioRanking] = []
 
     for i in range(len(scenarios)):
+        print(f"  ranking scenario {i + 1}/{len(scenarios)}...")
         responses = [actions[persona_index][i] for persona_index in range(n_samples)]
         result = rank_personas(target, scenarios[i], responses, client)
         order = [label - 1 for label in result.ranking]
-        if sorted(order) != list(range(n_samples)):
-            raise ValueError(f"Ranking {result.ranking} is not a permutation of 1..{n_samples}")
-        
+
         for position, persona_index in enumerate(order):
             scores[persona_index] += n_samples - 1 - position
         
@@ -241,7 +234,10 @@ def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
-    client = OpenAI()
+    client = OpenAI(
+        base_url = "https://openrouter.ai/api/v1",
+        api_key = os.environ["OPENROUTER_API_KEY"]
+    )
 
     with open("artifacts/profiles.json") as file:
         profiles_json = json.load(file)
@@ -254,12 +250,14 @@ if __name__ == "__main__":
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
     
+    print(f"Loaded {len(profiles)} EV profiles")
+
     artifacts = []
-    for archetype in Archetype:
-        target = [profile for profile in profiles if profile.archetype == archetype][0]
+    for index, target in enumerate(profiles):
+        print(f"[{index + 1}/{len(profiles)}] generating persona for {target.archetype.value} profile...")
         artifact = generate_best_persona(target, client)
         best = artifact.personas[artifact.best_index]
-        print(f"{archetype.value} best persona {artifact.best_index}: score={best.score}")
+        print(f"[{index + 1}/{len(profiles)}] {target.archetype.value} best persona {artifact.best_index}: score={best.score}")
         artifacts.append(json.loads(artifact.model_dump_json()))
 
     with open("artifacts/personas.json", "w") as file:

@@ -5,6 +5,7 @@ import numpy as np
 from typing import Literal
 from openai import OpenAI
 from personas import PersonaArtifact, format_profile
+from llm import call_llm
 from pydantic import BaseModel
 from profiles import Archetype, Profile, hhmm_to_mins, mins_to_hhmm
 from nodes import OsmNode, ChargerNode
@@ -510,7 +511,7 @@ Respond with exactly ONE action per turn — never multiple. Build a realistic d
 
 If you make a mistake, call reset_schedule to clear your schedule and start over from set_start_time."""
 
-def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20) -> Schedule:
+def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI) -> Schedule:
     day_name = DAY_NAMES[day_index]
     schedule = Schedule(start_time = None, blocks = [])
     system_prompt = build_system_prompt(agent, day_name, nodes)
@@ -522,15 +523,11 @@ def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmN
     ]
     context = list(opening)
 
-    for _ in range(max_turns):
-        response = client.responses.parse(
-            model = "gpt-5.4-mini",
-            input = context,
-            text_format = AgentAction
-        )
-        print(response.output_text, end = "\n\n\n")
-        context.append({"role": "assistant", "content": response.output_text})
-        action = response.output_parsed.action
+    while True:
+        parsed = call_llm(client, context, schema = AgentAction)
+        print(parsed, end = "\n\n\n")
+        context.append({"role": "assistant", "content": parsed.model_dump_json()})
+        action = parsed.action
         if isinstance(action, FinishTool):
             is_weekday = day_index < 5
             violations = schedule_violations(schedule, agent.archetype, is_weekday, nodes)

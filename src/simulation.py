@@ -1,9 +1,11 @@
 import json
+import os
 import dotenv
 from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
 from agent import Agent, NodeBlock, Schedule, CHARGE_POWER_KW, level_ports, DAY_NAMES, run_day, agent_from_persona_artifact, replay_soc
+from llm import call_llm
 from nodes import OsmNode, ChargerNode
 from personas import PersonaArtifact
 from profiles import hhmm_to_mins, mins_to_hhmm
@@ -152,11 +154,11 @@ def earliest_free(session: ChargeSession, sessions: list[ChargeSession], capacit
         return start
     return blockers[len(blockers) - capacity]
 
-def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, day_index: int, max_rounds: int = 100) -> list[ContentionEvent]:
+def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, day_index: int) -> list[ContentionEvent]:
     events = []
     prompted = {}
     reasoning_traces = {}
-    for _ in range(max_rounds):
+    while True:
         sessions = sessions_for(agents, day_index)
         contended = first_contention(sessions, nodes)
         if contended is None:
@@ -181,15 +183,11 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
                 )
             })
             prompted[contended.agent_index] = (node_id, level, charge_start)
-        response = client.responses.parse(
-            model = "gpt-5.4-mini",
-            input = context,
-            text_format = ChargeResolution
-        )
-        print(response.output_text, end = "\n\n\n")
-        context.append({"role": "assistant", "content": response.output_text})
-        action = response.output_parsed.action
-        reasoning_traces.setdefault(contended.agent_index, []).append(response.output_parsed.thought)
+        parsed = call_llm(client, context, schema = ChargeResolution)
+        print(parsed, end = "\n\n\n")
+        context.append({"role": "assistant", "content": parsed.model_dump_json()})
+        action = parsed.action
+        reasoning_traces.setdefault(contended.agent_index, []).append(parsed.thought)
 
         try:
             if isinstance(action, ListChargeStopsTool):
@@ -230,8 +228,6 @@ def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode],
         print(output)
         context.append({"role": "user", "content": output})
 
-    raise RuntimeError(f"charger contention unresolved within {max_rounds} rounds")
-
 def agent_status(agent: Agent, day_index: int, time: int) -> tuple[str, int | None]:
     for block in agent.schedules[day_index].blocks:
         if block.start_time <= time < block.end_time:
@@ -255,13 +251,13 @@ def build_simulation_events(agents: list[Agent], day_index: int) -> list[Simulat
         events.append(SimulationEvent(time = time, statuses = statuses))
     return events
 
-def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI, max_turns: int = 20, max_rounds: int = 100) -> list[dict]:
+def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI) -> list[dict]:
     results = []
     for day_index in range(7):
         start_socs = [agent.soc_kwh for agent in agents]
         for agent in agents:
-            agent.schedules.append(run_day(agent, day_index, agent.soc_kwh, nodes, roads, client, max_turns))
-        contention_events = resolve_contentions(agents, nodes, client, day_index, max_rounds)
+            agent.schedules.append(run_day(agent, day_index, agent.soc_kwh, nodes, roads, client))
+        contention_events = resolve_contentions(agents, nodes, client, day_index)
         for agent, start_soc in zip(agents, start_socs):
             agent.soc_kwh = replay_soc(agent.schedules[day_index], start_soc, agent.battery_kwh)
         simulation_events = build_simulation_events(agents, day_index)
@@ -270,7 +266,10 @@ def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: lis
 
 if __name__ == "__main__":
     dotenv.load_dotenv(override = True)
-    client = OpenAI()
+    client = OpenAI(
+        base_url = "https://openrouter.ai/api/v1",
+        api_key = os.environ["OPENROUTER_API_KEY"]
+    )
 
     with open("artifacts/personas.json") as file:
         artifact = PersonaArtifact.model_validate(json.load(file)[1])
