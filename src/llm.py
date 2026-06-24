@@ -13,6 +13,7 @@ def call_llm(client: OpenAI, messages: list[dict], schema: type[StructuredT] | N
     if schema is not None:
         schema_text = f"\n\nRespond with only a single JSON object matching this JSON schema. No markdown fences, no extra text:\n{json.dumps(schema.model_json_schema())}"
         input_messages = [{**messages[0], "content": messages[0]["content"] + schema_text}] + messages[1:]
+    failures = 0
     while True:
         time.sleep(3)
         response = client.responses.create(
@@ -26,5 +27,9 @@ def call_llm(client: OpenAI, messages: list[dict], schema: type[StructuredT] | N
         try:
             return schema.model_validate_json(text)
         except ValidationError:
+            failures += 1
             print(f"Failed to parse:\n{text}\n\nRetrying...")
+            if failures % 3 == 0:
+                print("3 consecutive failures, waiting 15 min...")
+                time.sleep(15 * 60)
             continue

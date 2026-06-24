@@ -181,7 +181,7 @@ Rank the people."""
         result = call_llm(client, [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
-        ], schema = RankingResult, reasoning = {"effort": "high"})
+        ], schema = RankingResult)
         if sorted(label - 1 for label in result.ranking) == list(range(len(responses))):
             print(result, end = "\n\n\n")
             return result
@@ -189,17 +189,17 @@ Rank the people."""
 def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
     dispositions = DISPOSITIONS[target.archetype]
     scenarios = SCENARIOS[target.archetype]
-    print(f"  generating {len(dispositions)} candidate personas...")
+    print(f"generating {len(dispositions)} candidate personas...")
     candidates = [generate_persona(target, client, disposition) for disposition in dispositions]
     n_samples = len(candidates)
-    print(f"  answering {len(scenarios)} scenarios across {n_samples} candidates...")
+    print(f"answering {len(scenarios)} scenarios across {n_samples} candidates...")
     actions = [[answer_scenario(persona, scenario, client) for scenario in scenarios] for persona in candidates]
 
     scores = [0] * n_samples
     rankings: list[ScenarioRanking] = []
 
     for i in range(len(scenarios)):
-        print(f"  ranking scenario {i + 1}/{len(scenarios)}...")
+        print(f"ranking scenario {i + 1}/{len(scenarios)}...")
         responses = [actions[persona_index][i] for persona_index in range(n_samples)]
         result = rank_personas(target, scenarios[i], responses, client)
         order = [label - 1 for label in result.ranking]
@@ -233,6 +233,8 @@ def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
     )
 
 if __name__ == "__main__":
+    CHUNK_SIZE = 25
+
     dotenv.load_dotenv(override = True)
     client = OpenAI(
         base_url = "https://openrouter.ai/api/v1",
@@ -243,22 +245,31 @@ if __name__ == "__main__":
         profiles_json = json.load(file)
 
     profiles: list[Profile] = []
-
     for profile_json in profiles_json:
- 
         profile = Profile.model_validate(profile_json)
         if all(trip.vehicle is not None and trip.vehicle.fuel_type in {"Electric", "Plug-in Hybrid"} for trip in profile.trips):
             profiles.append(profile)
-    
-    print(f"Loaded {len(profiles)} EV profiles")
 
-    artifacts = []
-    for index, target in enumerate(profiles):
+    persona_path = "artifacts/personas.json"
+    if os.path.exists(persona_path):
+        with open(persona_path) as file:
+            data = json.load(file)
+        start = data["profile_index"]
+        artifacts = data["personas"]
+    else:
+        start = 0
+        artifacts = []
+
+    end = min(start + CHUNK_SIZE, len(profiles))
+    print(f"Processing profiles {start}..{end - 1} of {len(profiles)}")
+
+    for index in range(start, end):
+        target = profiles[index]
         print(f"[{index + 1}/{len(profiles)}] generating persona for {target.archetype.value} profile...")
         artifact = generate_best_persona(target, client)
         best = artifact.personas[artifact.best_index]
-        print(f"[{index + 1}/{len(profiles)}] {target.archetype.value} best persona {artifact.best_index}: score={best.score}")
+        print(f"[{index + 1}/{len(profiles)}] best persona {artifact.best_index}: score={best.score}")
         artifacts.append(json.loads(artifact.model_dump_json()))
-
-    with open("artifacts/personas.json", "w") as file:
-        json.dump(artifacts, file, indent = 2)
+        with open(persona_path, "w") as file:
+            json.dump({"profile_index": index + 1, "personas": artifacts}, file, indent = 2)
+        print(f"saved {len(artifacts)} personas, next index {index + 1}")
