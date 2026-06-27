@@ -29,24 +29,24 @@ DISPOSITIONS: dict[Archetype, list[str]] = {
 
 SCENARIOS: dict[Archetype, list[str]] = {
     Archetype.NON_COMMUTER: [
-        "A mid-morning medical visit, your battery is low, and the charger lot is full. (A) Wait for a stall since you'll be parked for the appointment anyway, (B) skip and use a cheaper charger near your afternoon shopping, or (C) pay for a fast DC charge nearby to be safe before the drive home.",
-        "A free L2 charger is 10 minutes farther; a paid DC charger sits right on your route. (A) Detour for the free L2 while you shop, (B) take the quick paid DC on route, or (C) skip charging since your local range is fine.",
-        "Your battery hits 80% and charging slows, while a long family-visit drive looms tomorrow. (A) Unplug at 80% now, (B) wait for 100% to cover tomorrow, or (C) leave at 80% and fast-charge en route tomorrow."
+        "A relative calls midday proposing an outing; you're parked at a store with a low battery and modest range. (A) Top up now at the cheap L2 here while parked, even if you have to wait, (B) pay for a quick DC so you're free to leave the moment plans firm up, or (C) head out on your current range and charge opportunistically wherever the outing lands you.",
+        "You're at 80%, charging has slowed, and a longer family-visit drive is likely tomorrow. (A) Unplug at 80% now and deal with tomorrow tomorrow, (B) wait for near-full so the longer drive has a comfortable buffer, or (C) unplug now but pre-plan a charging stop on tomorrow's route so you're covered without waiting.",
+        "A free L2 charger is 10 minutes farther; a paid DC sits right on your route; your day is flexible. (A) Detour for the free L2 and run an errand nearby while it charges, (B) take the quick paid DC on route to keep the day easy, or (C) skip charging since local range is fine and decide later as the day unfolds."
     ],
     Archetype.PARENT_COMMUTER: [
-        "School calls for an early pickup during your planned charging stop, and your battery is low. (A) Abandon the charge and go straight to school, (B) take a quick DC top-up first if it's on the way, or (C) ask your partner to cover while you finish a short charge.",
-        "Your partner needs the shared car by 6 PM; you still have errands and a low battery. (A) Fast DC now to hand it back full, (B) cheap slow charge and drop an errand, or (C) skip charging, finish errands, and hand it back low.",
-        "Three kid runs plus groceries today. (A) Chain everything into one loop and charge during the longest activity, (B) make separate trips as each comes up and charge opportunistically, or (C) one loop but DC so you're never caught low with kids in the car."
+        "Mid-charge at a slow, cheap station, school calls for an early pickup and your battery is still low. (A) Abandon the charge and go straight to pickup, (B) move to a DC station near the school for a fast top-up on the way, or (C) ask your partner to cover pickup so you can finish the cheap charge.",
+        "Your partner needs the shared car by 6 PM; you're low with errands left. (A) Fast DC now to hand it back full and on time, (B) cheap slow charge and drop a non-essential errand, or (C) skip charging, finish the kid errands, and hand it back low.",
+        "Three kid runs plus groceries today. (A) One tight loop with a fast DC mid-way so you're never caught low with kids aboard, (B) one loop, charging slow during the longest activity to save money, or (C) separate trips as each comes up, grabbing a charge only if a pickup forces a wait."
     ],
     Archetype.FLEXIBLE_COMMUTER: [
-        "It's a remote day and public charging prices spike midday. (A) Shift charging to the cheap off-peak evening, (B) charge now to keep the rest of the day free, or (C) skip and charge tomorrow on the office run.",
-        "A friend proposes a spontaneous cross-town dinner after work. (A) Go, and fast-charge en route first, (B) go only if your current range covers it, or (C) decline since your range is too tight.",
-        "Your errands could be bundled today or deferred to a remote day. (A) Bundle now and charge at the longest stop, (B) defer to a low-traffic remote day, or (C) do them now and pay DC to stay flexible."
+        "It's a remote day, public charging prices spike midday, and your battery is moderate. (A) Wait and charge in the cheap off-peak evening window, (B) don't charge at all today, let it sit and top up cheap another day, or (C) charge now anyway, mid-errand, since you're already out and it's convenient.",
+        "A friend proposes a spontaneous cross-town dinner after today's trips; your range is tightish. (A) Go, and fast-charge en route first to be safe, (B) go only if your current range covers it and skip charging, or (C) go and charge opportunistically wherever you end up near the restaurant.",
+        "Your errands could be done now around the office area or deferred to a remote day. (A) Bundle them now and charge at the longest stop during peak, (B) defer to a low-traffic remote day and charge cheap off-peak, or (C) do them now, adding a couple impromptu stops and charging wherever convenient."
     ],
     Archetype.RIGID_COMMUTER: [
-        "You have a fixed start time, the charger on your route is full, and the queue is uncertain. (A) Wait and risk being late, (B) abandon it and drive to another charger on route, or (C) skip and charge after work at your usual spot.",
-        "A cheaper charger is 10 minutes off your fixed route; your usual one is on-route but pricier. (A) Stick to the on-route pricier one, (B) detour for the cheaper one, or (C) alternate depending on how tight the morning is.",
-        "An unexpected expense hit your household this month and charging is a notable cost. (A) Switch to the cheaper off-route charger despite the detour, (B) keep the routine and trim other spending, or (C) cut non-commute driving but keep the commute charge."
+        "It's a normal workday, your regular charger is unexpectedly offline, and you're at 40% with a fixed start time. (A) Pay more for a DC fast-charge at a station just off your route to stay topped up and on time, (B) drive on and run the day at 40%, betting your usual charger is back tomorrow, or (C) take a longer detour to another charger you know and trust, even if it costs you time.",
+        "Charging prices jumped at your on-route station this month; a cheaper one sits 12 minutes off-route. (A) Eat the higher price to keep your exact routine and timing, (B) switch to the cheaper off-route charger and rebuild your routine around it, or (C) add an earlier cheap top-up so you keep a high charge buffer while managing the cost.",
+        "You arrive and your usual charger has a two-car queue with uncertain wait; you have slack but not much. (A) Wait in line for your reliable usual charger, (B) leave immediately for a pricier DC station with open stalls to guarantee your timing, or (C) skip charging now since you have enough range and top up later at your cheap spot."
     ]
 }
 
@@ -62,40 +62,40 @@ NON_COMMUTER dispositions:
   Convenience-first affluent retiree . [3][4]
   Range-averse cautious retiree ...... [2]
   Spontaneous social retiree ......... [7][8]
-NON_COMMUTER scenarios:
-  1 medical visit, charger lot full .. [1][15]
-  2 free L2 vs paid DC on route ...... [3][5]
-  3 80% taper before long drive ...... [6]
+NON_COMMUTER scenarios (option -> disposition owners):
+  1 midday outing call, low battery .. [7][8]   A:0,2 B:1 C:3
+  2 80% taper before long drive ...... [6]       A:0,3 B:2 C:1
+  3 free L2 detour vs paid DC on route [3][5]    A:0,2 B:1 C:3
 
 PARENT_COMMUTER dispositions:
   Childcare-first juggler ............ [9][11]
   Shared-vehicle coordinator ......... [10][11]
   Budget-stretched family driver ..... [5][12]
   Time-pressed convenience parent .... [2][4]
-PARENT_COMMUTER scenarios:
-  1 early pickup vs charge ........... [9][11]
-  2 partner needs car by 6 PM ........ [10]
-  3 three kid runs + groceries ....... [12][13]
+PARENT_COMMUTER scenarios (option -> disposition owners):
+  1 early pickup mid-charge .......... [9][11]   A:0 B:3 C:1,2
+  2 partner needs car by 6 PM ........ [10]       A:1,3 B:2 C:0
+  3 three kid runs + groceries ....... [12][13]   A:1,3 B:2 C:0
 
 FLEXIBLE_COMMUTER dispositions:
   Off-peak optimizer ................. [4][16]
   Spontaneous remote-day runner ...... [7][13]
   Office-day convenience charger ..... [4][16]
   Frugal homebody hybrid ............. [2][5]
-FLEXIBLE_COMMUTER scenarios:
-  1 price spike on a remote day ...... [4]
-  2 spontaneous cross-town dinner .... [7][8]
-  3 bundle today vs defer ............ [12][13]
+FLEXIBLE_COMMUTER scenarios (option -> disposition owners):
+  1 price spike on a remote day ...... [4]        A:0 B:3 C:1,2
+  2 spontaneous cross-town dinner .... [7][8]      A:2 B:0,3 C:1
+  3 bundle today vs defer ............ [12][13]    A:2 B:0,3 C:1
 
 RIGID_COMMUTER dispositions:
   Schedule-protecting fast-charger ... [13][14]
   Routine cost-minimizer ............. [3][5]
   Range-anxious commuter ............. [2]
   Corridor-dependent charger ......... [15]
-RIGID_COMMUTER scenarios:
-  1 route charger full, fixed start .. [14][15]
-  2 cheaper off-route vs on-route .... [3]
-  3 unexpected expense ............... [2][5]
+RIGID_COMMUTER scenarios (option -> disposition owners):
+  1 usual charger offline, at 40% .... [14][15]   A:0,2 B:1 C:3
+  2 price jump, cheaper off-route .... [3][5]      A:0,3 B:1 C:2
+  3 two-car queue, uncertain wait .... [14][15]    A:3 B:0,2 C:1
 
 CITATIONS
 
