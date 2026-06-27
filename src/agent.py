@@ -1,5 +1,7 @@
+import json
 import math
 import heapq
+import os
 import random
 import numpy as np
 from typing import Literal
@@ -579,3 +581,45 @@ def replay_soc(schedule: Schedule, start_soc: float, battery_kwh: float) -> floa
             added = CHARGE_POWER_KW[block.charge_level] * block.charge_duration / 60
             soc = min(battery_kwh, soc + added)
     return soc
+
+if __name__ == "__main__":
+    client = ollama.Client()
+
+    with open("artifacts/personas.json") as file:
+        persona_artifacts = [PersonaArtifact.model_validate(artifact) for artifact in json.load(file)["personas"]]
+    with open("artifacts/nodes.json") as file:
+        nodes = [ChargerNode.model_validate(node) if node["category"] == "charger" else OsmNode.model_validate(node) for node in json.load(file)]
+    with open("artifacts/roads.json") as file:
+        roads = [Road.model_validate(road) for road in json.load(file)]
+
+    agent_path = "artifacts/agents.json"
+    if os.path.exists(agent_path):
+        with open(agent_path) as file:
+            data = json.load(file)
+        start = data["agent_index"]
+        simulation_index = data["simulation_index"]
+        agents = [Agent.model_validate(agent) for agent in data["agents"]]
+    else:
+        start = 0
+        simulation_index = 0
+        agents = []
+
+    home_node_id = next(node.id for node in nodes if node.category == "house")
+    print(f"Processing agents {start}..{len(persona_artifacts) - 1} of {len(persona_artifacts)}")
+
+    for index in range(start, len(persona_artifacts)):
+        artifact = persona_artifacts[index]
+        print(f"[{index + 1}/{len(persona_artifacts)}] generating agent for {artifact.target_profile.archetype.value} persona...")
+        agent = agent_from_persona_artifact(artifact, home_node_id)
+        for day_index in range(len(DAY_NAMES)):
+            print(f"  planning {DAY_NAMES[day_index]}...")
+            agent.schedules.append(run_day(agent, day_index, agent.soc_kwh, nodes, roads, client))
+        agent.soc_kwh = agent.start_soc_kwh
+        agents.append(agent)
+        with open(agent_path, "w") as file:
+            json.dump({
+                "agent_index": index + 1,
+                "simulation_index": simulation_index,
+                "agents": [json.loads(agent.model_dump_json()) for agent in agents]
+            }, file, indent = 2)
+        print(f"saved {len(agents)} agents, next index {index + 1}")

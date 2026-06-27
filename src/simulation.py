@@ -1,13 +1,12 @@
 import json
+import os
 from typing import Literal
 import ollama
 from pydantic import BaseModel
-from agent import Agent, NodeBlock, Schedule, CHARGE_POWER_KW, level_ports, DAY_NAMES, run_day, agent_from_persona_artifact, replay_soc
+from agent import Agent, NodeBlock, Schedule, CHARGE_POWER_KW, level_ports, DAY_NAMES, replay_soc
 from llm import call_llm
 from nodes import OsmNode, ChargerNode
-from personas import PersonaArtifact
 from profiles import hhmm_to_mins, mins_to_hhmm
-from roads import Road
 
 class ChargeSession(BaseModel):
     agent_index: int
@@ -249,42 +248,54 @@ def build_simulation_events(agents: list[Agent], day_index: int) -> list[Simulat
         events.append(SimulationEvent(time = time, statuses = statuses))
     return events
 
-def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: list[Road], client: ollama.Client) -> list[dict]:
-    results = []
-    for day_index in range(7):
+if __name__ == "__main__":
+    client = ollama.Client()
+
+    agent_path = "artifacts/agents.json"
+    simulation_path = "artifacts/simulation_logs.json"
+
+    with open(agent_path) as file:
+        agent_data = json.load(file)
+    with open("artifacts/nodes.json") as file:
+        nodes = [ChargerNode.model_validate(node) if node["category"] == "charger" else OsmNode.model_validate(node) for node in json.load(file)]
+
+    agent_index = agent_data["agent_index"]
+    start = agent_data["simulation_index"]
+    agents = [Agent.model_validate(agent) for agent in agent_data["agents"]]
+
+    if os.path.exists(simulation_path):
+        with open(simulation_path) as file:
+            data = json.load(file)
+        start = data["simulation_index"]
+        days = data["days"]
+    else:
+        days = []
+
+    print(f"Processing simulation days {start}..{len(DAY_NAMES) - 1} for {len(agents)} agents")
+    for day_index in range(start, len(DAY_NAMES)):
+        print(f"[{day_index + 1}/{len(DAY_NAMES)}] simulating {DAY_NAMES[day_index]}...")
         start_socs = [agent.soc_kwh for agent in agents]
-        for agent in agents:
-            agent.schedules.append(run_day(agent, day_index, agent.soc_kwh, nodes, roads, client))
         contention_events = resolve_contentions(agents, nodes, client, day_index)
         for agent, start_soc in zip(agents, start_socs):
             agent.soc_kwh = replay_soc(agent.schedules[day_index], start_soc, agent.battery_kwh)
         simulation_events = build_simulation_events(agents, day_index)
-        results.append({"day": DAY_NAMES[day_index], "contention_events": contention_events, "simulation_events": simulation_events})
-    return results
 
-if __name__ == "__main__":
-    client = ollama.Client()
+        days.append({
+            "day": DAY_NAMES[day_index],
+            "contention_events": [event.model_dump() for event in contention_events],
+            "simulation_events": [event.model_dump() for event in simulation_events]
+        })
+        next_index = day_index + 1
 
-    with open("artifacts/personas.json") as file:
-        artifact = PersonaArtifact.model_validate(json.load(file)[1])
-    with open("artifacts/nodes.json") as file:
-        nodes = [ChargerNode.model_validate(node) if node["category"] == "charger" else OsmNode.model_validate(node) for node in json.load(file)]
-    with open("artifacts/roads.json") as file:
-        roads = [Road.model_validate(road) for road in json.load(file)]
-
-    home_node_id = next(node.id for node in nodes if node.category == "house")
-    agents = [agent_from_persona_artifact(artifact, home_node_id)]
-    result = run_week(agents, nodes, roads, client)
-
-    with open("artifacts/simulation_logs.json", "w") as file:
-        json.dump([
-            {
-                "day": day["day"],
-                "contention_events": [event.model_dump() for event in day["contention_events"]],
-                "simulation_events": [event.model_dump() for event in day["simulation_events"]]
-            }
-            for day in result
-        ], file, indent = 2)
-
-    with open("artifacts/agents.json", "w") as file:
-        json.dump([json.loads(agent.model_dump_json()) for agent in agents], file, indent = 2)
+        with open(simulation_path, "w") as file:
+            json.dump({
+                "simulation_index": next_index,
+                "days": days
+            }, file, indent = 2)
+        with open(agent_path, "w") as file:
+            json.dump({
+                "agent_index": agent_index,
+                "simulation_index": next_index,
+                "agents": [json.loads(agent.model_dump_json()) for agent in agents]
+            }, file, indent = 2)
+        print(f"saved simulation day {DAY_NAMES[day_index]}, next simulation index {next_index}")

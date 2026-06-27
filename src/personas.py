@@ -232,8 +232,6 @@ def generate_best_persona(target: Profile, client: ollama.Client) -> PersonaArti
     )
 
 if __name__ == "__main__":
-    CHUNK_SIZE = 25
-
     client = ollama.Client()
 
     with open("artifacts/profiles.json") as file:
@@ -255,7 +253,7 @@ if __name__ == "__main__":
         start = 0
         artifacts = []
 
-    end = min(start + CHUNK_SIZE, len(profiles))
+    end = len(profiles)
     print(f"Processing profiles {start}..{end - 1} of {len(profiles)}")
 
     for index in range(start, end):

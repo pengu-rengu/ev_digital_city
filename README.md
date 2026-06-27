@@ -34,9 +34,9 @@ side branches used by the notebooks, not by the simulation.
 | `combined_map.py` | `nodes.json`, `roads.json` | `combined_map.png` | Overlay nodes and roads on one Reston map. |
 | `profiles.py` | `data/person.csv`, `household.csv`, `vehicle.csv`, `trip.csv`, centroid JSONs | `profiles.json` | Build per-person `Profile`s: demographics, attributes (caregiver, mobility, work arrangement, schedule irregularity), commuter archetype, and geolocated trips. |
 | `filter_profiles.py` | `profiles.json` | `filtered_profiles.json` | Naive-Bayes filter that keeps profiles likely to be EV owners (notebooks only). |
-| `personas.py` | `profiles.json` | `personas.json` | For an all-EV target profile, iteratively generate → score → reflect → refine a natural-language persona with the LLM. |
-| `agent.py` | `personas.json`, `nodes.json`, `roads.json` | `agents.json` | LLM agent role-plays the persona and builds a daily schedule (stops + one charge) using search / A* routing / schedule tools. |
-| `simulation.py` | `agents.json`, `nodes.json` | `simulation_logs.json` | Detect charger contention across agents and let each agent resolve it (queue / relocate / give up); emit timeline + contention events. |
+| `personas.py` | `profiles.json` | `personas.json` | Checkpointed persona generation for all EV target profiles; each candidate is generated, scenario-scored, and ranked with the LLM. |
+| `agent.py` | `personas.json`, `nodes.json`, `roads.json` | `agents.json` | Checkpointed weekly schedule generation for each persona using search / A* routing / schedule tools. |
+| `simulation.py` | `agents.json`, `nodes.json` | `simulation_logs.json` | Checkpointed day-by-day charger-contention simulation across scheduled agents; emits timeline + contention events. |
 | `labels.py` | — | — | Survey integer-code → human-label lookup dicts used by `profiles.py`. |
 
 ### `notebooks/`
@@ -94,6 +94,12 @@ uv run src/personas.py        # -> personas.json   (from profiles.json)
 uv run src/agent.py           # -> agents.json     (from personas.json, nodes.json, roads.json)
 uv run src/simulation.py      # -> simulation_logs.json  (from agents.json, nodes.json)
 ```
+
+The LLM stages checkpoint after each completed unit of work. `personas.json` stores
+`profile_index`; `agents.json` stores `agent_index` and `simulation_index`; and
+`simulation_logs.json` stores `simulation_index`. Re-running a stage resumes from
+the saved index. Once simulation has started, regenerate `agents.json` and
+`simulation_logs.json` together rather than appending new agents.
 
 `simulation_logs.json` is the final output: the agent status timeline plus charger-contention events
 and the agents' reasoning traces.
