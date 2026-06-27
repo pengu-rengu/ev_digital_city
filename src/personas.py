@@ -1,8 +1,7 @@
-import dotenv
 import json
 import os
 from typing import Literal
-from openai import OpenAI
+import ollama
 from pydantic import BaseModel
 from profiles import Profile
 from persona_data import DISPOSITIONS, SCENARIOS
@@ -69,7 +68,7 @@ def format_profile(profile: Profile) -> str:
 
     return text
 
-def generate_persona(profile: Profile, client: OpenAI, disposition: str) -> str:
+def generate_persona(profile: Profile, client: ollama.Client, disposition: str) -> str:
     system_prompt = """You are a social scientist building grounded, realistic personas of real people for a travel-behavior study. You will be given a Profile with demographics and a list of trips taken on a single day, along with a disposition: a short description of the person's general behavioral attitude — how they travel, run their day, and charge their EV. Your persona must plausibly fit the Profile and the disposition, and make the person's routine, day-to-day variation, and EV charging habits inferable.
 
 DON'T:
@@ -137,7 +136,7 @@ Generate one persona from this profile and disposition"""
     print(text, end = "\n\n\n")
     return text
 
-def answer_scenario(persona: str, scenario: str, client: OpenAI) -> ScenarioResponse:
+def answer_scenario(persona: str, scenario: str, client: ollama.Client) -> ScenarioResponse:
     system_prompt = f"""You are the following persona. Stay fully in character as this person.
 
 Persona:
@@ -155,7 +154,7 @@ You will be given a situation about your travel, charging, or daily life, with o
     print(result, end = "\n\n\n")
     return result
 
-def rank_personas(profile: Profile, scenario: str, responses: list[ScenarioResponse], client: OpenAI) -> RankingResult:
+def rank_personas(profile: Profile, scenario: str, responses: list[ScenarioResponse], client: ollama.Client) -> RankingResult:
     profile_str = format_profile(profile)
     responses_text = "\n".join(
         f"Person {index + 1} chose option {response.action}.\nPerson {index + 1} reasoning:\n{response.reasoning}\n"
@@ -186,7 +185,7 @@ Rank the people."""
             print(result, end = "\n\n\n")
             return result
 
-def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
+def generate_best_persona(target: Profile, client: ollama.Client) -> PersonaArtifact:
     dispositions = DISPOSITIONS[target.archetype]
     scenarios = SCENARIOS[target.archetype]
     print(f"generating {len(dispositions)} candidate personas...")
@@ -235,11 +234,7 @@ def generate_best_persona(target: Profile, client: OpenAI) -> PersonaArtifact:
 if __name__ == "__main__":
     CHUNK_SIZE = 25
 
-    dotenv.load_dotenv(override = True)
-    client = OpenAI(
-        base_url = "https://openrouter.ai/api/v1",
-        api_key = os.environ["OPENROUTER_API_KEY"]
-    )
+    client = ollama.Client()
 
     with open("artifacts/profiles.json") as file:
         profiles_json = json.load(file)

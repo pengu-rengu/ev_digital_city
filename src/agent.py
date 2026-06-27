@@ -3,7 +3,7 @@ import heapq
 import random
 import numpy as np
 from typing import Literal
-from openai import OpenAI
+import ollama
 from personas import PersonaArtifact, format_profile
 from llm import call_llm
 from pydantic import BaseModel
@@ -511,7 +511,7 @@ Respond with exactly ONE action per turn — never multiple. Build a realistic d
 
 If you make a mistake, call reset_schedule to clear your schedule and start over from set_start_time."""
 
-def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI) -> Schedule:
+def run_day(agent: Agent, day_index: int, day_start_soc: float, nodes: list[OsmNode | ChargerNode], roads: list[Road], client: ollama.Client) -> Schedule:
     day_name = DAY_NAMES[day_index]
     schedule = Schedule(start_time = None, blocks = [])
     system_prompt = build_system_prompt(agent, day_name, nodes)

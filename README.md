@@ -60,10 +60,11 @@ cd ev_digital_city
 uv sync
 ```
 
-The persona / agent / simulation stages call the OpenAI API. Create `src/.env`:
+The persona / agent / simulation stages call a local Ollama model. Install and
+start Ollama, then pull the required model:
 
 ```bash
-echo "OPENAI_API_KEY=sk-..." > src/.env
+ollama pull gemma4:e4b
 ```
 
 `artifacts/` and the OSM extract are not committed and must be generated/downloaded (next section).
@@ -86,7 +87,7 @@ uv run src/roads.py           # -> roads.json, roads_map.png
 uv run src/profiles.py        # -> profiles.json
 ```
 
-**3. Generate the LLM-driven artifacts** (requires `OPENAI_API_KEY` in `src/.env`):
+**3. Generate the LLM-driven artifacts** (requires local Ollama with `gemma4:e4b`):
 
 ```bash
 uv run src/personas.py        # -> personas.json   (from profiles.json)

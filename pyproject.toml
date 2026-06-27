@@ -9,6 +9,7 @@ dependencies = [
     "ipywidgets>=8.1",
     "jupyterlab>=4.5.7",
     "matplotlib>=3.10.9",
+    "ollama>=0.6.2",
     "openai>=2.41.0",
     "osmium>=4.3.1",
     "pandas>=3.0.3",

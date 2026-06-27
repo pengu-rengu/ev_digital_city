@@ -1,8 +1,6 @@
 import json
-import os
-import dotenv
 from typing import Literal
-from openai import OpenAI
+import ollama
 from pydantic import BaseModel
 from agent import Agent, NodeBlock, Schedule, CHARGE_POWER_KW, level_ports, DAY_NAMES, run_day, agent_from_persona_artifact, replay_soc
 from llm import call_llm
@@ -154,7 +152,7 @@ def earliest_free(session: ChargeSession, sessions: list[ChargeSession], capacit
         return start
     return blockers[len(blockers) - capacity]
 
-def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: OpenAI, day_index: int) -> list[ContentionEvent]:
+def resolve_contentions(agents: list[Agent], nodes: list[OsmNode | ChargerNode], client: ollama.Client, day_index: int) -> list[ContentionEvent]:
     events = []
     prompted = {}
     reasoning_traces = {}
@@ -251,7 +249,7 @@ def build_simulation_events(agents: list[Agent], day_index: int) -> list[Simulat
         events.append(SimulationEvent(time = time, statuses = statuses))
     return events
 
-def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: list[Road], client: OpenAI) -> list[dict]:
+def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: list[Road], client: ollama.Client) -> list[dict]:
     results = []
     for day_index in range(7):
         start_socs = [agent.soc_kwh for agent in agents]
@@ -265,11 +263,7 @@ def run_week(agents: list[Agent], nodes: list[OsmNode | ChargerNode], roads: lis
     return results
 
 if __name__ == "__main__":
-    dotenv.load_dotenv(override = True)
-    client = OpenAI(
-        base_url = "https://openrouter.ai/api/v1",
-        api_key = os.environ["OPENROUTER_API_KEY"]
-    )
+    client = ollama.Client()
 
     with open("artifacts/personas.json") as file:
         artifact = PersonaArtifact.model_validate(json.load(file)[1])

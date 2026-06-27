@@ -36,27 +36,26 @@ def charging_agent(home_node_id: int, blocks: list[NodeBlock]) -> Agent:
     )
 
 
-class FakeParsed:
-    def __init__(self, action: object) -> None:
-        self.output = []
-        self.output_text = ""
-        self.output_parsed = ChargeResolution(thought = "", action = action)
+class FakeMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
 
 
-class FakeResponses:
-    def __init__(self, actions: list[object]) -> None:
-        self.actions = actions
-        self.calls = 0
-
-    def parse(self, model: str, input: list[dict], text_format: type) -> FakeParsed:
-        action = self.actions[self.calls]
-        self.calls += 1
-        return FakeParsed(action)
+class FakeResponse:
+    def __init__(self, content: str) -> None:
+        self.message = FakeMessage(content)
 
 
 class FakeClient:
     def __init__(self, actions: list[object]) -> None:
-        self.responses = FakeResponses(actions)
+        self.actions = actions
+        self.calls = 0
+
+    def chat(self, model: str, messages: list[dict], format: dict | None = None) -> FakeResponse:
+        action = self.actions[self.calls]
+        self.calls += 1
+        content = ChargeResolution(thought = "", action = action).model_dump_json()
+        return FakeResponse(content)
 
 
 def test_detection_flags_latest_arrival() -> None:

@@ -193,27 +193,26 @@ def test_schedule_format() -> None:
     assert "gym: 08:15 - 08:45" in text
 
 
-class FakeParsed:
-    def __init__(self, action: object) -> None:
-        self.output = []
-        self.output_text = ""
-        self.output_parsed = AgentAction(thought = "", action = action)
+class FakeMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
 
 
-class FakeResponses:
-    def __init__(self, actions: list[object]) -> None:
-        self.actions = actions
-        self.calls = 0
-
-    def parse(self, model: str, input: list[dict], text_format: type) -> FakeParsed:
-        action = self.actions[self.calls]
-        self.calls += 1
-        return FakeParsed(action)
+class FakeResponse:
+    def __init__(self, content: str) -> None:
+        self.message = FakeMessage(content)
 
 
 class FakeClient:
     def __init__(self, actions: list[object]) -> None:
-        self.responses = FakeResponses(actions)
+        self.actions = actions
+        self.calls = 0
+
+    def chat(self, model: str, messages: list[dict], format: dict | None = None) -> FakeResponse:
+        action = self.actions[self.calls]
+        self.calls += 1
+        content = AgentAction(thought = "", action = action).model_dump_json()
+        return FakeResponse(content)
 
 
 def charging_office() -> tuple[OsmNode, OsmNode, list[Road]]:
@@ -258,7 +257,7 @@ def test_run_agent_drives_tools() -> None:
 
     assert schedule.start_time == 480
     assert any(isinstance(block, NodeBlock) and block.charge_level == "L2" for block in schedule.blocks)
-    assert client.responses.calls == 3
+    assert client.calls == 3
 
 
 def test_finish_blocked_until_charge() -> None:
@@ -276,7 +275,7 @@ def test_finish_blocked_until_charge() -> None:
 
     schedule = run_day(agent, 0, agent.soc_kwh, [home, office], roads, client)
 
-    assert client.responses.calls == 5
+    assert client.calls == 5
     assert any(message["role"] == "user" and "make it home" in message["content"] for message in agent.contexts[0])
     assert any(isinstance(block, NodeBlock) and block.charge_level == "L2" for block in schedule.blocks)
 
